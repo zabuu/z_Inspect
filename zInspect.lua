@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.2",
+    VERSION = "1.4.3",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -552,45 +552,52 @@ function zInspect:FormatTalentsFrame()
     tw:SetFrameStrata("DIALOG")
     tw:SetFrameLevel(f:GetFrameLevel() + 1)
 
-    -- Fill the entire zInspectFrame window (338 x 424) edge-to-edge
+    -- Match zInspectFrame window dimensions (338 x 424)
     tw:SetScale(1.0)
     tw:ClearAllPoints()
     tw:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
     tw:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+    tw:SetWidth(338)
+    tw:SetHeight(424)
 
-    -- Full-bleed talent tree background art covering all 338 x 424 pixels of the frame
+    -- Center talent background art cleanly inside the frame
+    -- Native Blizzard talent art is 320 x 354 (Top: 256x256 + 64x256, Bottom: 256x98 + 64x98 visible)
+    -- Centered horizontally: (338 - 320) / 2 = 9 px left and right margins
+    -- Centered vertically:   (424 - 354) / 2 = 35 px top and bottom margins
     local tl = TWTalentFrameBackgroundTopLeft
     local tr = TWTalentFrameBackgroundTopRight
     local bl = TWTalentFrameBackgroundBottomLeft
     local br = TWTalentFrameBackgroundBottomRight
 
     if tl and tr and bl and br then
-        local leftW = 270
-        local rightW = 68
+        local originX = 9
+        local originY = -35
+        local leftW = 256
+        local rightW = 64
         local topH = 256
-        local bottomH = 168
+        local bottomH = 128
 
         -- In WoW 1.12, Textures MUST be anchored to a Frame (tw), NOT to other Textures!
         tl:ClearAllPoints()
-        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", 0, 0)
+        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY)
         tl:SetWidth(leftW)
         tl:SetHeight(topH)
         tl:SetTexCoord(0, 1, 0, 1)
 
         tr:ClearAllPoints()
-        tr:SetPoint("TOPLEFT", tw, "TOPLEFT", leftW, 0)
+        tr:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY)
         tr:SetWidth(rightW)
         tr:SetHeight(topH)
         tr:SetTexCoord(0, 1, 0, 1)
 
         bl:ClearAllPoints()
-        bl:SetPoint("TOPLEFT", tw, "TOPLEFT", 0, -topH)
+        bl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY - topH)
         bl:SetWidth(leftW)
         bl:SetHeight(bottomH)
         bl:SetTexCoord(0, 1, 0, 1)
 
         br:ClearAllPoints()
-        br:SetPoint("TOPLEFT", tw, "TOPLEFT", leftW, -topH)
+        br:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY - topH)
         br:SetWidth(rightW)
         br:SetHeight(bottomH)
         br:SetTexCoord(0, 1, 0, 1)
@@ -601,7 +608,7 @@ function zInspect:FormatTalentsFrame()
     if sf then
         sf:SetScale(0.75)
         sf:ClearAllPoints()
-        sf:SetPoint("TOPLEFT", tw, "TOPLEFT", 73, -96)
+        sf:SetPoint("TOPLEFT", tw, "TOPLEFT", 76, -68)
         sf:SetWidth(296)
         sf:SetHeight(440)
         -- Hide all texture regions on the scroll frame itself (the Blizzard scrollbar track graphics)
@@ -780,8 +787,7 @@ function zInspect:SetTab(tabId)
         self:UpdateHonorTab()
 
     elseif tabId == "talents" then
-        -- Fill the entire frame with the talent tree BG, clearing the flat dark backdrop
-        f:SetBackdropColor(0, 0, 0, 0)
+        f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         modelContainer:Hide()
         self:SetGearSlotsVisible(false)
