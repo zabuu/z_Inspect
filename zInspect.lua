@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.3",
+    VERSION = "1.4.4",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -459,7 +459,7 @@ local specTab1 = CreateSpecTab(1)
 local specTab2 = CreateSpecTab(2)
 local specTab3 = CreateSpecTab(3)
 
-specTab1:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -48)
+specTab1:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -37)
 specTab2:SetPoint("LEFT", specTab1, "RIGHT", 4, 0)
 specTab3:SetPoint("LEFT", specTab2, "RIGHT", 4, 0)
 
@@ -774,6 +774,9 @@ function zInspect:SetTab(tabId)
             npcPanel:Hide()
             self:UpdateSlots(self.currentUnit or "target")
         end
+        if guildText:GetText() and guildText:GetText() ~= "" then
+            guildText:Show()
+        end
 
     elseif tabId == "honor" then
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
@@ -794,6 +797,7 @@ function zInspect:SetTab(tabId)
         npcPanel:Hide()
         if InspectHonorFrame then InspectHonorFrame:Hide() end
         statsText:SetText("")
+        guildText:Hide()
         for i = 1, 3 do self.specTabs[i]:Show() end
         self:UpdateTalentsTab()
     end
@@ -1160,7 +1164,11 @@ function zInspect:InspectUnit(unit)
 
         if guild and guild ~= "" then
             guildText:SetText(string.format("<%s> %s", guild, guildRank or ""))
-            guildText:Show()
+            if self.currentTab == "character" then
+                guildText:Show()
+            else
+                guildText:Hide()
+            end
         else
             guildText:SetText("")
             guildText:Hide()
