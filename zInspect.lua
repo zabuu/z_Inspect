@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.0",
+    VERSION = "1.4.1",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -548,41 +548,46 @@ function zInspect:FormatTalentsFrame()
     tw:ClearAllPoints()
     tw:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -44)
 
-    -- Configure background art to fit the full height between spec tabs and bottom tabs
-    -- Original aspect ratio: 320 x 424 (Top: 256+64 x 256, Bottom: 256+64 x 168)
-    -- Total height in tw units (scale 0.75) is 434 (325.5 px on screen), exactly reaching above bottom tabs
+    -- Configure background art to fit the full height of all 7 talent tiers
+    -- Native background aspect ratio: 320 x 424 (Width: 256+64, Height: 256+168)
+    -- Total height in tw units is 470 (reaches y=-506, well below Tier 7 at y=-475)
     local tl = TWTalentFrameBackgroundTopLeft
     local tr = TWTalentFrameBackgroundTopRight
     local bl = TWTalentFrameBackgroundBottomLeft
     local br = TWTalentFrameBackgroundBottomRight
 
     if tl and tr and bl and br then
-        local totalH = 434
-        local topH = 262
-        local bottomH = totalH - topH -- 172
-        local totalW = 328
-        local leftW = 262
-        local rightW = totalW - leftW -- 66
+        local originX = 14
+        local originY = -36
+        local topH = 270
+        local bottomH = 200
+        local leftW = 272
+        local rightW = 68
 
+        -- In WoW 1.12, Textures MUST be anchored to a Frame (tw), NOT to other Textures!
         tl:ClearAllPoints()
-        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", 18, -40)
+        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY)
         tl:SetWidth(leftW)
         tl:SetHeight(topH)
+        tl:SetTexCoord(0, 1, 0, 1)
 
         tr:ClearAllPoints()
-        tr:SetPoint("TOPLEFT", tl, "TOPRIGHT", 0, 0)
+        tr:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY)
         tr:SetWidth(rightW)
         tr:SetHeight(topH)
+        tr:SetTexCoord(0, 1, 0, 1)
 
         bl:ClearAllPoints()
-        bl:SetPoint("TOPLEFT", tl, "BOTTOMLEFT", 0, 0)
+        bl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY - topH)
         bl:SetWidth(leftW)
         bl:SetHeight(bottomH)
+        bl:SetTexCoord(0, 1, 0, 1)
 
         br:ClearAllPoints()
-        br:SetPoint("TOPLEFT", tr, "BOTTOMLEFT", 0, 0)
+        br:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY - topH)
         br:SetWidth(rightW)
         br:SetHeight(bottomH)
+        br:SetTexCoord(0, 1, 0, 1)
     end
 
     -- Completely remove empty scrollbar frame (encased in blue) and all its tracks/backdrops
