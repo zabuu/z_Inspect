@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.3.9",
+    VERSION = "1.4.0",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -548,11 +548,112 @@ function zInspect:FormatTalentsFrame()
     tw:ClearAllPoints()
     tw:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -44)
 
-    -- Hide scrollbar track since entire talent tree is comfortably visible
+    -- Configure background art to fit the full height between spec tabs and bottom tabs
+    -- Original aspect ratio: 320 x 424 (Top: 256+64 x 256, Bottom: 256+64 x 168)
+    -- Total height in tw units (scale 0.75) is 434 (325.5 px on screen), exactly reaching above bottom tabs
+    local tl = TWTalentFrameBackgroundTopLeft
+    local tr = TWTalentFrameBackgroundTopRight
+    local bl = TWTalentFrameBackgroundBottomLeft
+    local br = TWTalentFrameBackgroundBottomRight
+
+    if tl and tr and bl and br then
+        local totalH = 434
+        local topH = 262
+        local bottomH = totalH - topH -- 172
+        local totalW = 328
+        local leftW = 262
+        local rightW = totalW - leftW -- 66
+
+        tl:ClearAllPoints()
+        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", 18, -40)
+        tl:SetWidth(leftW)
+        tl:SetHeight(topH)
+
+        tr:ClearAllPoints()
+        tr:SetPoint("TOPLEFT", tl, "TOPRIGHT", 0, 0)
+        tr:SetWidth(rightW)
+        tr:SetHeight(topH)
+
+        bl:ClearAllPoints()
+        bl:SetPoint("TOPLEFT", tl, "BOTTOMLEFT", 0, 0)
+        bl:SetWidth(leftW)
+        bl:SetHeight(bottomH)
+
+        br:ClearAllPoints()
+        br:SetPoint("TOPLEFT", tr, "BOTTOMLEFT", 0, 0)
+        br:SetWidth(rightW)
+        br:SetHeight(bottomH)
+    end
+
+    -- Completely remove empty scrollbar frame (encased in blue) and all its tracks/backdrops
+    local sf = TWTalentFrameScrollFrame
+    if sf then
+        -- Hide all texture regions on the scroll frame itself (the Blizzard scrollbar track graphics)
+        local regions = { sf:GetRegions() }
+        for _, reg in ipairs(regions) do
+            if reg and reg.GetObjectType and reg:GetObjectType() == "Texture" then
+                reg:SetTexture(nil)
+                reg:Hide()
+                reg:SetAlpha(0)
+            end
+        end
+        if sf.backdrop then
+            sf.backdrop:Hide()
+            sf.backdrop:SetAlpha(0)
+        end
+        if sf.bg then
+            sf.bg:Hide()
+            sf.bg:SetAlpha(0)
+        end
+    end
+
     local sb = TWTalentFrameScrollFrameScrollBar
     if sb then
         sb:Hide()
         sb:SetAlpha(0)
+        sb:EnableMouse(false)
+        sb:ClearAllPoints()
+        sb:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+
+        if sb.bg then
+            sb.bg:Hide()
+            sb.bg:SetAlpha(0)
+            sb.bg:ClearAllPoints()
+            sb.bg:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+            if sb.bg.backdrop then
+                sb.bg.backdrop:Hide()
+                sb.bg.backdrop:SetAlpha(0)
+                sb.bg.backdrop:ClearAllPoints()
+                sb.bg.backdrop:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+            end
+        end
+        if sb.backdrop then
+            sb.backdrop:Hide()
+            sb.backdrop:SetAlpha(0)
+            sb.backdrop:ClearAllPoints()
+            sb.backdrop:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+        end
+        if sb.thumb then
+            sb.thumb:Hide()
+            sb.thumb:SetAlpha(0)
+        end
+
+        local up = _G["TWTalentFrameScrollFrameScrollBarScrollUpButton"]
+        local down = _G["TWTalentFrameScrollFrameScrollBarScrollDownButton"]
+        if up then
+            up:Hide()
+            up:SetAlpha(0)
+            up:ClearAllPoints()
+            up:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+            if up.backdrop then up.backdrop:Hide(); up.backdrop:SetAlpha(0) end
+        end
+        if down then
+            down:Hide()
+            down:SetAlpha(0)
+            down:ClearAllPoints()
+            down:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 2000, -2000)
+            if down.backdrop then down.backdrop:Hide(); down.backdrop:SetAlpha(0) end
+        end
     end
 
     -- Keep Blizzard's default tabs hidden
