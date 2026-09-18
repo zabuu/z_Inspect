@@ -2,7 +2,7 @@
 ## Title: |cff33ffccz|rInspect
 ## Notes: Sleek 3D inspect frame for players, enemies, and NPCs with out-of-range streaming.
 ## Author: Samer / Zab
-## Version: 1.4.1
+## Version: 1.4.2
 ## SavedVariables: zInspectDB
 
 Bindings.xml

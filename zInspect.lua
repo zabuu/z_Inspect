@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.1",
+    VERSION = "1.4.2",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -161,6 +161,8 @@ local nameText = f:CreateFontString("zInspectNameText", "OVERLAY", "GameFontHigh
 nameText:SetPoint("TOPLEFT", f, "TOPLEFT", 8, -6)
 nameText:SetWidth(230)
 nameText:SetJustifyH("LEFT")
+nameText:SetShadowColor(0, 0, 0, 1)
+nameText:SetShadowOffset(1, -1)
 nameText:SetText("")
 
 local infoText = f:CreateFontString("zInspectInfoText", "OVERLAY", "GameFontNormalSmall")
@@ -168,6 +170,8 @@ infoText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -1)
 infoText:SetWidth(230)
 infoText:SetJustifyH("LEFT")
 infoText:SetTextColor(0.85, 0.85, 0.85)
+infoText:SetShadowColor(0, 0, 0, 1)
+infoText:SetShadowOffset(1, -1)
 infoText:SetText("")
 
 local guildText = f:CreateFontString("zInspectGuildText", "OVERLAY", "GameFontHighlightSmall")
@@ -175,7 +179,12 @@ guildText:SetPoint("TOPLEFT", infoText, "BOTTOMLEFT", 0, -1)
 guildText:SetWidth(230)
 guildText:SetJustifyH("LEFT")
 guildText:SetTextColor(0.4, 0.8, 1.0)
+guildText:SetShadowColor(0, 0, 0, 1)
+guildText:SetShadowOffset(1, -1)
 guildText:SetText("")
+
+statusBadge:SetShadowColor(0, 0, 0, 1)
+statusBadge:SetShadowOffset(1, -1)
 
 -- Discrete, subtle branding at bottom right
 local brandText = f:CreateFontString("zInspectBrandText", "OVERLAY", "GameFontDisableSmall")
@@ -543,56 +552,58 @@ function zInspect:FormatTalentsFrame()
     tw:SetFrameStrata("DIALOG")
     tw:SetFrameLevel(f:GetFrameLevel() + 1)
 
-    -- Proportional scale (0.75) so all 7 tiers fit comfortably between spec tabs and bottom tabs
-    tw:SetScale(0.75)
+    -- Fill the entire zInspectFrame window (338 x 424) edge-to-edge
+    tw:SetScale(1.0)
     tw:ClearAllPoints()
-    tw:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -44)
+    tw:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+    tw:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
 
-    -- Configure background art to fit the full height of all 7 talent tiers
-    -- Native background aspect ratio: 320 x 424 (Width: 256+64, Height: 256+168)
-    -- Total height in tw units is 470 (reaches y=-506, well below Tier 7 at y=-475)
+    -- Full-bleed talent tree background art covering all 338 x 424 pixels of the frame
     local tl = TWTalentFrameBackgroundTopLeft
     local tr = TWTalentFrameBackgroundTopRight
     local bl = TWTalentFrameBackgroundBottomLeft
     local br = TWTalentFrameBackgroundBottomRight
 
     if tl and tr and bl and br then
-        local originX = 14
-        local originY = -36
-        local topH = 270
-        local bottomH = 200
-        local leftW = 272
+        local leftW = 270
         local rightW = 68
+        local topH = 256
+        local bottomH = 168
 
         -- In WoW 1.12, Textures MUST be anchored to a Frame (tw), NOT to other Textures!
         tl:ClearAllPoints()
-        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY)
+        tl:SetPoint("TOPLEFT", tw, "TOPLEFT", 0, 0)
         tl:SetWidth(leftW)
         tl:SetHeight(topH)
         tl:SetTexCoord(0, 1, 0, 1)
 
         tr:ClearAllPoints()
-        tr:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY)
+        tr:SetPoint("TOPLEFT", tw, "TOPLEFT", leftW, 0)
         tr:SetWidth(rightW)
         tr:SetHeight(topH)
         tr:SetTexCoord(0, 1, 0, 1)
 
         bl:ClearAllPoints()
-        bl:SetPoint("TOPLEFT", tw, "TOPLEFT", originX, originY - topH)
+        bl:SetPoint("TOPLEFT", tw, "TOPLEFT", 0, -topH)
         bl:SetWidth(leftW)
         bl:SetHeight(bottomH)
         bl:SetTexCoord(0, 1, 0, 1)
 
         br:ClearAllPoints()
-        br:SetPoint("TOPLEFT", tw, "TOPLEFT", originX + leftW, originY - topH)
+        br:SetPoint("TOPLEFT", tw, "TOPLEFT", leftW, -topH)
         br:SetWidth(rightW)
         br:SetHeight(bottomH)
         br:SetTexCoord(0, 1, 0, 1)
     end
 
-    -- Completely remove empty scrollbar frame (encased in blue) and all its tracks/backdrops
+    -- Scale and center the talent buttons (0.75 scale) cleanly over the background art
     local sf = TWTalentFrameScrollFrame
     if sf then
+        sf:SetScale(0.75)
+        sf:ClearAllPoints()
+        sf:SetPoint("TOPLEFT", tw, "TOPLEFT", 73, -96)
+        sf:SetWidth(296)
+        sf:SetHeight(440)
         -- Hide all texture regions on the scroll frame itself (the Blizzard scrollbar track graphics)
         local regions = { sf:GetRegions() }
         for _, reg in ipairs(regions) do
@@ -739,6 +750,8 @@ function zInspect:SetTab(tabId)
     end
 
     if tabId == "character" then
+        f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
+        f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
         if InspectHonorFrame then InspectHonorFrame:Hide() end
         if TWTalentFrame then TWTalentFrame:Hide() end
@@ -756,6 +769,8 @@ function zInspect:SetTab(tabId)
         end
 
     elseif tabId == "honor" then
+        f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
+        f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
         modelContainer:Hide()
         self:SetGearSlotsVisible(false)
@@ -765,6 +780,9 @@ function zInspect:SetTab(tabId)
         self:UpdateHonorTab()
 
     elseif tabId == "talents" then
+        -- Fill the entire frame with the talent tree BG, clearing the flat dark backdrop
+        f:SetBackdropColor(0, 0, 0, 0)
+        f:SetBackdropBorderColor(0, 0, 0, 1)
         modelContainer:Hide()
         self:SetGearSlotsVisible(false)
         npcPanel:Hide()
@@ -1042,11 +1060,15 @@ function zInspect:UpdateSlots(unit)
         end
     end
 
-    if itemsWithLevel > 0 then
-        local avgIlvl = math.floor((totalItemLevel / itemsWithLevel) * 10) / 10
-        statsText:SetText(string.format("|cff33ffccAvg iLvl:|r %.1f (%d items)", avgIlvl, itemsFound))
-    elseif itemsFound > 0 then
-        statsText:SetText(string.format("|cff33ffccGear:|r %d items", itemsFound))
+    if self.currentTab == "character" and not self.isTargetNPC then
+        if itemsWithLevel > 0 then
+            local avgIlvl = math.floor((totalItemLevel / itemsWithLevel) * 10) / 10
+            statsText:SetText(string.format("|cff33ffccAvg iLvl:|r %.1f (%d items)", avgIlvl, itemsFound))
+        elseif itemsFound > 0 then
+            statsText:SetText(string.format("|cff33ffccGear:|r %d items", itemsFound))
+        else
+            statsText:SetText("")
+        end
     else
         statsText:SetText("")
     end
@@ -1226,6 +1248,7 @@ end
 
 function zInspect:Hide()
     f:Hide()
+    f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
     self.isWaitingForRange = false
     self.currentUnit = nil
     for i = 1, 3 do self.specTabs[i]:Hide() end
