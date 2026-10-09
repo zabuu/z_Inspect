@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.12",
+    VERSION = "1.4.13",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
