@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.4",
+    VERSION = "1.4.11",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -23,6 +23,18 @@ zInspect = {
     isWaitingForRange = false,
     pollTimer = 0,
     inspectRequested = false,
+    talentRetryName = nil,
+    talentRetryElapsed = 0,
+    talentReplyComplete = false,
+    talentRefreshPending = false,
+    talentResponseActive = false,
+    talentRequestCount = 0,
+    talentPacketCount = 0,
+    talentWaitElapsed = 0,
+    talentStatusElapsed = 0,
+    talentReplySource = nil,
+    nativeTalentHooked = false,
+    talentVisualElapsed = 0,
     cache = {},
     tabs = {},
     specTabs = {},
@@ -185,6 +197,34 @@ guildText:SetText("")
 
 statusBadge:SetShadowColor(0, 0, 0, 1)
 statusBadge:SetShadowOffset(1, -1)
+
+-- Live talent request progress, kept above the bottom tabs and tree artwork.
+local talentStatusBar = CreateFrame("Frame", "zInspectTalentStatusBar", f)
+talentStatusBar:SetWidth(320)
+talentStatusBar:SetHeight(18)
+talentStatusBar:SetPoint("BOTTOM", f, "BOTTOM", 0, 31)
+talentStatusBar:SetFrameStrata("FULLSCREEN_DIALOG")
+talentStatusBar:SetFrameLevel(55)
+talentStatusBar:SetBackdrop(flatBackdrop)
+talentStatusBar:SetBackdropColor(0.04, 0.04, 0.04, 0.9)
+talentStatusBar:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
+local talentStatusText = talentStatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+talentStatusText:SetPoint("LEFT", talentStatusBar, "LEFT", 6, 0)
+talentStatusText:SetWidth(308)
+talentStatusText:SetJustifyH("LEFT")
+talentStatusBar:Hide()
+
+local selfTalentPanel = CreateFrame("Frame", "zInspectSelfTalentPanel", f)
+selfTalentPanel:SetWidth(318)
+selfTalentPanel:SetHeight(290)
+selfTalentPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -66)
+selfTalentPanel:SetFrameStrata("DIALOG")
+selfTalentPanel:SetFrameLevel(f:GetFrameLevel() + 2)
+selfTalentPanel:SetBackdrop(flatBackdrop)
+selfTalentPanel:SetBackdropColor(0.04, 0.04, 0.04, 0.92)
+selfTalentPanel:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
+selfTalentPanel:Hide()
+local selfTalentButtons = {}
 
 -- Discrete, subtle branding at bottom right
 local brandText = f:CreateFontString("zInspectBrandText", "OVERLAY", "GameFontDisableSmall")
@@ -484,7 +524,6 @@ end
 
 function zInspect:SelectTalentSpec(specIndex)
     self.currentTalentSpec = specIndex
-    local class = EnsureTalentsClass()
 
     -- Highlight our custom spec tabs
     for i = 1, 3 do
@@ -500,6 +539,11 @@ function zInspect:SelectTalentSpec(specIndex)
                 tab.text:SetTextColor(0.6, 0.6, 0.6)
             end
         end
+    end
+
+    if self.currentUnit and UnitExists(self.currentUnit) and UnitIsUnit("player", self.currentUnit) then
+        self:RenderSelfTalents()
+        return
     end
 
     -- Switch the tab inside Turtle WoW safely without throwing network errors
@@ -741,6 +785,10 @@ tabTalent:SetPoint("LEFT", tabHonor, "RIGHT", 3, 0)
 
 -- Switch Tab Implementation
 function zInspect:SetTab(tabId)
+    if tabId ~= "talents" then
+        self:StopTalentRetry()
+        talentStatusBar:Hide()
+    end
     self.currentTab = tabId
 
     -- Highlight active tab
@@ -757,6 +805,7 @@ function zInspect:SetTab(tabId)
     end
 
     if tabId == "character" then
+        selfTalentPanel:Hide()
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
@@ -779,6 +828,7 @@ function zInspect:SetTab(tabId)
         end
 
     elseif tabId == "honor" then
+        selfTalentPanel:Hide()
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
@@ -852,6 +902,167 @@ function zInspect:UpdateHonorTab()
 end
 
 -- Update Talents Tab
+local TALENT_RETRY_INTERVAL = 0.3
+local TALENT_RESPONSE_TIMEOUT = 2
+-- Keep the initial probe fast, but avoid an endless high-rate message stream.
+local TALENT_SUSTAINED_INTERVAL = 1
+
+function zInspect:RenderSelfTalents()
+    if not selfTalentPanel:IsShown() then selfTalentPanel:Show() end
+    talentStatusBar:Show()
+
+    local tree = self.currentTalentSpec or 1
+    local treeName, _, pointsSpent = GetTalentTabInfo(tree)
+    local numTalents = GetNumTalents(tree) or 0
+    if not treeName then
+        talentStatusText:SetText("Your talent data is unavailable")
+        return
+    end
+
+    for i = 1, 3 do
+        local name = GetTalentTabInfo(i)
+        if name and self.specTabs[i] then self.specTabs[i].text:SetText(name) end
+    end
+
+    for _, button in pairs(selfTalentButtons) do button:Hide() end
+    for i = 1, numTalents do
+        local name, icon, tier, column, rank, maxRank = GetTalentInfo(tree, i)
+        if name and tier and column and tier >= 1 and tier <= 7 and column >= 1 and column <= 4 then
+            local button = selfTalentButtons[i]
+            if not button then
+                button = CreateFrame("Button", "zInspectSelfTalent" .. i, selfTalentPanel)
+                button:SetWidth(32)
+                button:SetHeight(32)
+                button:SetBackdrop(slotBackdrop)
+                button:SetBackdropColor(0.09, 0.09, 0.09, 1)
+                local texture = button:CreateTexture(nil, "ARTWORK")
+                texture:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -2)
+                texture:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
+                texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                button.icon = texture
+                local rankText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmallOutline")
+                rankText:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -1, 1)
+                button.rankText = rankText
+                button:SetScript("OnEnter", function()
+                    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                    GameTooltip:SetTalent(this.talentTree, this.talentIndex)
+                    GameTooltip:Show()
+                end)
+                button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+                selfTalentButtons[i] = button
+            end
+            button:ClearAllPoints()
+            button:SetPoint("TOPLEFT", selfTalentPanel, "TOPLEFT", 15 + (column - 1) * 80, -8 - (tier - 1) * 39)
+            button.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            button.icon:SetAlpha((rank or 0) > 0 and 1 or 0.55)
+            button.rankText:SetText((rank or 0) .. "/" .. (maxRank or 0))
+            button:SetBackdropBorderColor((rank or 0) > 0 and 0.75 or 0.25, (rank or 0) > 0 and 0.62 or 0.25, 0.15, 1)
+            button.talentTree = tree
+            button.talentIndex = i
+            button:Show()
+        end
+    end
+    talentStatusText:SetText(string.format("Your talents | %s | %d points", treeName, pointsSpent or 0))
+end
+
+function zInspect:StopTalentRetry()
+    self.talentRetryName = nil
+    self.talentRetryElapsed = 0
+    self.talentReplyComplete = false
+    self.talentRefreshPending = false
+    self.talentResponseActive = false
+    self.talentRequestCount = 0
+    self.talentPacketCount = 0
+    self.talentWaitElapsed = 0
+    self.talentStatusElapsed = 0
+    self.talentReplySource = nil
+    self.talentVisualElapsed = 0
+end
+
+function zInspect:HasPopulatedTalentTree()
+    if not self.currentUnit or not UnitExists(self.currentUnit) or not TWTalentFrame or not TWTalentFrame:IsShown() then
+        return false
+    end
+    local _, class = UnitClass(self.currentUnit)
+    local classTrees = Turtle_TalentsData and Turtle_TalentsData[class]
+    local firstTab = _G["TWTalentFrameTab1"]
+    if not classTrees or not classTrees[1] or not firstTab
+        or firstTab:GetText() ~= classTrees[1].name then
+        return false
+    end
+    for i = 1, 20 do
+        local rankText = _G["TWTalentFrameTalent" .. i .. "Rank"]
+        if rankText and rankText:IsShown() then
+            local _, _, digits = string.find(rankText:GetText() or "", "^(%d+)")
+            local rank = tonumber(digits)
+            if rank and rank > 0 then return true end
+        end
+    end
+    return false
+end
+
+function zInspect:MarkTalentReply(source)
+    if not f:IsShown() or self.currentTab ~= "talents" or not self.talentRetryName then return end
+    if not self.currentUnit or not UnitExists(self.currentUnit)
+        or UnitName(self.currentUnit) ~= self.talentRetryName then return end
+    self.talentReplyComplete = true
+    self.talentRefreshPending = true
+    if source == "native" or not self.talentReplySource then
+        self.talentReplySource = source
+    end
+    talentStatusText:SetText(string.format("Reply complete (%s) | %d packets | drawing...", source, self.talentPacketCount))
+end
+
+function zInspect:HookNativeTalentCompletion()
+    if self.nativeTalentHooked or not hooksecurefunc or not TWInspectTalents_Show then return end
+    hooksecurefunc("TWInspectTalents_Show", function()
+        zInspect:MarkTalentReply("native")
+    end)
+    self.nativeTalentHooked = true
+end
+
+function zInspect:UpdateTalentStatus()
+    if not self.talentRetryName then return end
+    local elapsed = string.format("%.1fs", self.talentWaitElapsed)
+    if self.talentResponseActive then
+        talentStatusText:SetText(string.format("Receiving %s | %d packets | %s", self.talentRetryName, self.talentPacketCount, elapsed))
+    elseif self.talentPacketCount > 0 then
+        talentStatusText:SetText(string.format("Reply stalled | retry %d | %s", self.talentRequestCount, elapsed))
+    else
+        local firstIcon = _G["TWTalentFrameTalent1IconTexture"]
+        if firstIcon and firstIcon:GetTexture() then
+            talentStatusText:SetText(string.format("Tree visible (unverified) | try %d | %s", self.talentRequestCount, elapsed))
+        else
+            talentStatusText:SetText(string.format("Awaiting %s reply | try %d | %s", self.talentRetryName, self.talentRequestCount, elapsed))
+        end
+    end
+end
+
+function zInspect:StartTalentRetry()
+    self:StopTalentRetry()
+    talentStatusBar:Show()
+    local unit = self.currentUnit
+    if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) or UnitIsUnit("player", unit) then
+        talentStatusText:SetText("No other player selected for talent inspection")
+        return
+    end
+
+    self.talentRetryName = UnitName(unit)
+    -- Let the native request run first, then send our first retry after 300 ms.
+    self.talentRetryElapsed = 0
+    statusBadge:SetText("|cffffaa00Loading talents...|r")
+    self:UpdateTalentStatus()
+end
+
+function zInspect:RequestTalents()
+    if not self.talentRetryName or not SendAddonMessage then return end
+    -- OctoWoW's talent inspection uses a peer addon message. The inspected
+    -- player's client replies with INSTalentTabInfo / INSTalentInfo / INSTalentEND.
+    SendAddonMessage("TW_CHAT_MSG_WHISPER<" .. self.talentRetryName .. ">", "INSShowTalents", "GUILD")
+    self.talentRequestCount = self.talentRequestCount + 1
+    self:UpdateTalentStatus()
+end
+
 function zInspect:UpdateTalentsTab()
     if not IsAddOnLoaded("Blizzard_TalentUI") then
         LoadAddOn("Blizzard_TalentUI")
@@ -859,13 +1070,22 @@ function zInspect:UpdateTalentsTab()
     if not IsAddOnLoaded("Blizzard_InspectUI") then
         UIParentLoadAddOn("Blizzard_InspectUI")
     end
+    self:HookNativeTalentCompletion()
 
     if InspectFrame then
         InspectFrame.unit = self.currentUnit or "target"
         InspectFrame:Hide()
     end
 
+    if self.currentUnit and UnitExists(self.currentUnit) and UnitIsUnit("player", self.currentUnit) then
+        if TWTalentFrame then TWTalentFrame:Hide() end
+        self:SelectTalentSpec(self.currentTalentSpec or 1)
+        return
+    end
+
+    selfTalentPanel:Hide()
     EnsureTalentsClass()
+    self:StartTalentRetry()
 
     -- Only send network inspect request if target is a valid player and not self
     if UnitExists("target") and UnitIsPlayer("target") and not UnitIsUnit("player", "target") and UnitName("target") then
@@ -1261,6 +1481,9 @@ function zInspect:Toggle()
 end
 
 function zInspect:Hide()
+    self:StopTalentRetry()
+    talentStatusBar:Hide()
+    selfTalentPanel:Hide()
     f:Hide()
     f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
     self.isWaitingForRange = false
@@ -1286,6 +1509,9 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("INSPECT_HONOR_UPDATE")
 eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+eventFrame:RegisterEvent("CHAT_MSG_ADDON")
+eventFrame:RegisterEvent("CHARACTER_POINTS_CHANGED")
+eventFrame:RegisterEvent("SPELLS_CHANGED")
 
 eventFrame:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" or event == "PLAYER_ENTERING_WORLD" then
@@ -1318,6 +1544,29 @@ eventFrame:SetScript("OnEvent", function()
             zInspect.inspectFrameHooked = true
         end
 
+    elseif event == "CHARACTER_POINTS_CHANGED" or event == "SPELLS_CHANGED" then
+        if f:IsShown() and zInspect.currentTab == "talents" and zInspect.currentUnit
+            and UnitExists(zInspect.currentUnit) and UnitIsUnit("player", zInspect.currentUnit) then
+            zInspect:RenderSelfTalents()
+        end
+
+    elseif event == "CHAT_MSG_ADDON" then
+        if f:IsShown() and zInspect.currentTab == "talents" and zInspect.talentRetryName
+            and arg1 == "TW_CHAT_MSG_WHISPER" and arg4
+            and string.lower(arg4) == string.lower(zInspect.talentRetryName) then
+            if arg2 == "INSTalentEND;" then
+                -- Refresh on the next frame, after OctoWoW has processed the reply.
+                zInspect:MarkTalentReply("message")
+            elseif arg2 and (string.find(arg2, "INSTalentTabInfo;", 1, true) == 1
+                or string.find(arg2, "INSTalentInfo;", 1, true) == 1) then
+                -- Let an active response finish before sending another request.
+                zInspect.talentResponseActive = true
+                zInspect.talentRetryElapsed = 0
+                zInspect.talentPacketCount = zInspect.talentPacketCount + 1
+                zInspect:UpdateTalentStatus()
+            end
+        end
+
     elseif event == "INSPECT_HONOR_UPDATE" then
         if f:IsShown() and zInspect.currentTab == "honor" then
             if InspectHonorFrame_Update then
@@ -1347,6 +1596,50 @@ end)
 -- and periodically refreshes uncached items on enemy targets
 f:SetScript("OnUpdate", function()
     if not f:IsShown() then return end
+
+    if zInspect.talentRetryName and zInspect.currentTab == "talents" then
+        zInspect.talentWaitElapsed = zInspect.talentWaitElapsed + arg1
+        zInspect.talentStatusElapsed = zInspect.talentStatusElapsed + arg1
+        if not zInspect.currentUnit or not UnitExists(zInspect.currentUnit)
+            or UnitName(zInspect.currentUnit) ~= zInspect.talentRetryName then
+            zInspect:StopTalentRetry()
+            talentStatusText:SetText("Target unavailable; talent requests stopped")
+        elseif zInspect.talentRefreshPending then
+            zInspect.talentRefreshPending = false
+            local updated = TWTalentFrame_Update and pcall(TWTalentFrame_Update)
+            if updated or zInspect.talentReplySource == "native" then
+                zInspect:FormatTalentsFrame()
+                zInspect:SelectTalentSpec(zInspect.currentTalentSpec or 1)
+                statusBadge:SetText("|cff00ff00Talents loaded|r")
+                talentStatusText:SetText(string.format("Talents loaded (%s) | %d packets | %.1fs", zInspect.talentReplySource or "message", zInspect.talentPacketCount, zInspect.talentWaitElapsed))
+                zInspect:StopTalentRetry()
+            else
+                zInspect.talentReplyComplete = false
+            end
+        elseif zInspect.talentRequestCount > 0 and zInspect:HasPopulatedTalentTree() then
+            zInspect.talentVisualElapsed = zInspect.talentVisualElapsed + arg1
+            if zInspect.talentVisualElapsed >= 0.6 then
+                statusBadge:SetText("|cffffd200Talents visible|r")
+                talentStatusText:SetText(string.format("Tree populated (unverified) | %d tries | %.1fs", zInspect.talentRequestCount, zInspect.talentWaitElapsed))
+                zInspect:StopTalentRetry()
+            end
+        elseif not zInspect.talentReplyComplete then
+            zInspect.talentVisualElapsed = 0
+            zInspect.talentRetryElapsed = zInspect.talentRetryElapsed + arg1
+            if zInspect.talentResponseActive and zInspect.talentRetryElapsed >= TALENT_RESPONSE_TIMEOUT then
+                zInspect.talentResponseActive = false
+                zInspect.talentRetryElapsed = 0
+            elseif not zInspect.talentResponseActive and zInspect.talentRetryElapsed >=
+                (zInspect.talentRequestCount < 10 and TALENT_RETRY_INTERVAL or TALENT_SUSTAINED_INTERVAL) then
+                zInspect.talentRetryElapsed = 0
+                zInspect:RequestTalents()
+            end
+        end
+        if zInspect.talentStatusElapsed >= 0.2 then
+            zInspect.talentStatusElapsed = 0
+            zInspect:UpdateTalentStatus()
+        end
+    end
 
     zInspect.pollTimer = zInspect.pollTimer + arg1
     if zInspect.pollTimer >= 0.25 then
