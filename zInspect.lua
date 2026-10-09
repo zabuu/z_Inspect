@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.11",
+    VERSION = "1.4.12",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -39,6 +39,18 @@ zInspect = {
     tabs = {},
     specTabs = {},
 }
+
+-- Register commands before building the UI. If a client update breaks frame
+-- initialization, /zi remains available and reports that startup did not finish.
+SLASH_ZINSPECT1 = "/zinspect"
+SLASH_ZINSPECT2 = "/zi"
+SlashCmdList["ZINSPECT"] = function(msg)
+    if zInspect and zInspect.Toggle then
+        zInspect:Toggle()
+    elseif DEFAULT_CHAT_FRAME then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccz|rInspect did not finish loading. Check FrameXML.log.")
+    end
+end
 
 -- Keybinding localization text
 BINDING_HEADER_ZSUITE = BINDING_HEADER_ZSUITE or "zSuite"
@@ -219,7 +231,7 @@ selfTalentPanel:SetWidth(318)
 selfTalentPanel:SetHeight(290)
 selfTalentPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -66)
 selfTalentPanel:SetFrameStrata("DIALOG")
-selfTalentPanel:SetFrameLevel(f:GetFrameLevel() + 2)
+selfTalentPanel:SetFrameLevel(2)
 selfTalentPanel:SetBackdrop(flatBackdrop)
 selfTalentPanel:SetBackdropColor(0.04, 0.04, 0.04, 0.92)
 selfTalentPanel:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
@@ -1661,13 +1673,6 @@ f:SetScript("OnUpdate", function()
         end
     end
 end)
-
--- Slash Commands
-SLASH_ZINSPECT1 = "/zinspect"
-SLASH_ZINSPECT2 = "/zi"
-SlashCmdList["ZINSPECT"] = function(msg)
-    zInspect:Toggle()
-end
 
 -- Welcome message after greeting delay
 local greetTimer = CreateFrame("Frame")
