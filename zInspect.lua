@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.13",
+    VERSION = "1.4.14",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -135,6 +135,23 @@ f:SetScript("OnDragStop", function()
 end)
 f:SetFrameStrata("DIALOG")
 f:Hide()
+
+local function CenterInspectFrame()
+    f:ClearAllPoints()
+    f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+end
+
+local function RestoreInspectFramePosition()
+    local pos = zInspectDB and zInspectDB.pos
+    if type(pos) == "table" and type(pos.point) == "string"
+        and type(pos.x) == "number" and type(pos.y) == "number" then
+        f:ClearAllPoints()
+        f:SetPoint(pos.point, UIParent, pos.point, pos.x, pos.y)
+    else
+        CenterInspectFrame()
+        if zInspectDB then zInspectDB.pos = nil end
+    end
+end
 
 -- Allow closing via ESC key
 tinsert(UISpecialFrames, "zInspectFrame")
@@ -1339,6 +1356,10 @@ function zInspect:InspectUnit(unit)
     self.isTargetEnemy = UnitIsEnemy("player", unit)
     self.isTargetNPC = not self.isTargetPlayer
 
+    -- A malformed or partially written SavedVariables position can leave the
+    -- frame technically shown but unanchored and therefore invisible.
+    local point = f:GetPoint()
+    if not point then CenterInspectFrame() end
     f:Show()
 
     -- Reset to Character tab on fresh inspect
@@ -1529,11 +1550,9 @@ eventFrame:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" or event == "PLAYER_ENTERING_WORLD" then
         zInspectDB = zInspectDB or {}
         
-        -- Restore saved position
-        if zInspectDB.pos then
-            f:ClearAllPoints()
-            f:SetPoint(zInspectDB.pos.point, UIParent, zInspectDB.pos.point, zInspectDB.pos.x, zInspectDB.pos.y)
-        end
+        -- Restore only complete coordinates. An empty pos table previously
+        -- removed the frame's anchor and made /zi look completely inert.
+        RestoreInspectFramePosition()
 
         -- Initialize default keybindings to [ and ] if unbound
         if not zInspectDB.initializedBindings then
