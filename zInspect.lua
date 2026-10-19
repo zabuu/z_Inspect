@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.14",
+    VERSION = "1.4.15",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -367,6 +367,15 @@ local statsText = f:CreateFontString("zInspectStatsText", "OVERLAY", "GameFontHi
 statsText:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 30)
 statsText:SetJustifyH("LEFT")
 statsText:SetText("")
+local displayedStatsText = ""
+
+local function SetStatsText(text)
+    text = text or ""
+    if displayedStatsText ~= text then
+        displayedStatsText = text
+        statsText:SetText(text)
+    end
+end
 
 -- Create Sleek Equipment Slot Buttons (32 x 32 px with 36 px vertical step)
 local slotButtons = {}
@@ -417,26 +426,18 @@ local function CreateSlotButton(slotDef)
 
     btn.slotDef = slotDef
     btn.slotId = slotDef.id
+    local _, emptyTexture = GetInventorySlotInfo(slotDef.name)
+    btn.emptyTexture = emptyTexture
+    btn.displayState = {}
 
     -- Tooltip Handlers
     btn:SetScript("OnEnter", function()
-        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-        local hasItem = false
-        if zInspect.currentUnit and not zInspect.isWaitingForRange and not zInspect.isTargetEnemy then
-            hasItem = GameTooltip:SetInventoryItem(zInspect.currentUnit, this.slotId)
-        end
-        if not hasItem and this.itemLink then
-            GameTooltip:SetHyperlink(this.itemLink)
-            hasItem = true
-        end
-        if not hasItem then
-            GameTooltip:SetText(this.slotDef.label, 1, 1, 1)
-            GameTooltip:AddLine("Empty slot", 0.5, 0.5, 0.5)
-        end
-        GameTooltip:Show()
+        zInspect:ShowSlotTooltip(this)
     end)
 
     btn:SetScript("OnLeave", function()
+        zInspect.hoveredGearSlot = nil
+        zInspect.transmogTooltipPending = nil
         GameTooltip:Hide()
     end)
 
@@ -482,6 +483,177 @@ if slotButtons[16] and slotButtons[17] and slotButtons[18] then
     slotButtons[16]:SetPoint("RIGHT", slotButtons[17], "LEFT", -4, 0)
     slotButtons[18]:ClearAllPoints()
     slotButtons[18]:SetPoint("LEFT", slotButtons[17], "RIGHT", 4, 0)
+end
+
+-- OctoWoW patch-4 adds transmog text through InspectTransmogTooltip_OnShow,
+-- which only accepts the default inspect slots. Its appearance data arrives
+-- separately from NotifyInspect, over the INSShowTransmogs peer protocol.
+local function ItemIDFromLink(link)
+    local _, _, itemID = string.find(link or "", "item:(%d+)")
+    return tonumber(itemID)
+end
+
+function zInspect:RefreshTransmogTooltip()
+    local btn = self.hoveredGearSlot
+    if btn and self.currentTab == "character" and f:IsShown() and GameTooltip:IsOwned(btn) then
+        self:ShowSlotTooltip(btn)
+    else
+        self.transmogTooltipPending = nil
+    end
+end
+
+function zInspect:AddTransmogToTooltip(btn, link)
+    self.transmogTooltipPending = nil
+    local itemID = ItemIDFromLink(link)
+    if not itemID or not self.currentUnit or not UnitExists(self.currentUnit)
+        or UnitName(self.currentUnit) ~= self.currentUnitName then return end
+
+    local transmogID
+    if UnitIsUnit("player", self.currentUnit) then
+        -- The client's own transmog UI maintains this by equipped item ID.
+        transmogID = TransmogStatus and tonumber(TransmogStatus[itemID])
+    elseif self.transmogUnitName == self.currentUnitName then
+        local data = self.transmogItems and self.transmogItems[btn.slotId]
+        if data and data.equipID == itemID then transmogID = data.transmogID end
+    end
+    if not transmogID or transmogID <= 0 or transmogID == itemID then return end
+
+    local itemName = GetItemInfo(transmogID)
+    if not itemName then
+        self.transmogTooltipPending = btn
+        if self.transmogPendingItemID ~= transmogID then
+            self.transmogPendingItemID = transmogID
+            scannerTooltip:SetHyperlink("item:" .. transmogID)
+            scannerTooltip:Hide()
+        end
+        return
+    end
+    self.transmogPendingItemID = nil
+
+    local header = TRANSMOG_CHANGED_TO or "Transmogrified to:"
+    local line2 = _G[GameTooltip:GetName() .. "TextLeft2"]
+    local text = line2 and line2:GetText()
+    if text then
+        -- Also tolerate a future client/addon adding the same native line.
+        if not string.find(text, header, 1, true) then
+            line2:SetText("|cfff471f5" .. header .. "\n" .. itemName .. "|r\n" .. text)
+        end
+    else
+        GameTooltip:AddLine(header .. "\n" .. itemName, 0.9569, 0.4431, 0.9608)
+    end
+end
+
+function zInspect:ShowSlotTooltip(btn)
+    self.hoveredGearSlot = btn
+    self.transmogTooltipPending = nil
+    GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
+    local hasItem, link
+    if self.currentUnit and UnitExists(self.currentUnit)
+        and UnitName(self.currentUnit) == self.currentUnitName then
+        -- Always prefer live inventory, even if our range flag is stale.
+        hasItem = GameTooltip:SetInventoryItem(self.currentUnit, btn.slotId)
+        if hasItem then link = GetInventoryItemLink(self.currentUnit, btn.slotId) end
+    end
+    if not hasItem and btn.itemLink then
+        GameTooltip:SetHyperlink(btn.itemLink)
+        link = btn.itemLink
+        hasItem = true
+    end
+    if hasItem then
+        self:AddTransmogToTooltip(btn, link or btn.itemLink)
+    else
+        GameTooltip:SetText(btn.slotDef.label, 1, 1, 1)
+        GameTooltip:AddLine("Empty slot", 0.5, 0.5, 0.5)
+    end
+    GameTooltip:Show()
+end
+
+function zInspect:RequestTransmogs()
+    if not SendAddonMessage or not self.transmogUnitName or not self.currentUnit
+        or not UnitExists(self.currentUnit) or not f:IsShown()
+        or UnitName(self.currentUnit) ~= self.transmogUnitName
+        or UnitIsUnit("player", self.currentUnit) then return end
+    SendAddonMessage("TW_CHAT_MSG_WHISPER<" .. self.transmogUnitName .. ">", "INSShowTransmogs", "GUILD")
+    self.transmogRequestCount = (self.transmogRequestCount or 0) + 1
+    self.transmogRetryElapsed = 0
+end
+
+function zInspect:StartTransmogInspect(unit)
+    if self.hoveredGearSlot and GameTooltip:IsOwned(self.hoveredGearSlot) then
+        GameTooltip:Hide()
+    end
+    self.transmogItems = {}
+    self.transmogUnitName = nil
+    self.transmogReplyStarted = false
+    self.transmogRequestCount = 0
+    self.transmogRetryElapsed = 0
+    self.transmogRefreshDelay = nil
+    self.transmogTooltipPending = nil
+    self.transmogPendingItemID = nil
+    self.hoveredGearSlot = nil
+    if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return end
+    self.transmogUnitName = UnitName(unit)
+    self:RequestTransmogs()
+end
+
+function zInspect:HandleTransmogMessage(prefix, message, sender)
+    if prefix ~= "TW_CHAT_MSG_WHISPER" or type(message) ~= "string" or type(sender) ~= "string"
+        or not f:IsShown() or not self.transmogUnitName or not self.currentUnit
+        or not UnitExists(self.currentUnit) or UnitName(self.currentUnit) ~= self.transmogUnitName
+        or string.lower(sender) ~= string.lower(self.transmogUnitName) then return end
+
+    local delimiter = string.gsub(ADDON_MSG_FIELD_DELIMITER or ";", "(%W)", "%%%1")
+    local _, _, slot, transmogID, equipID = string.find(message,
+        "^INSTransmogs" .. delimiter .. "(%w+)" .. delimiter .. "(%d+)" .. delimiter .. "(%d+)$")
+    if not slot then return end
+    if slot == "start" then
+        self.transmogItems = {}
+        self.transmogReplyStarted = true
+    else
+        slot, transmogID, equipID = tonumber(slot), tonumber(transmogID), tonumber(equipID)
+        if not slot or not slotButtons[slot] then return end
+        self.transmogItems = self.transmogItems or {}
+        self.transmogReplyStarted = true
+        if transmogID > 0 and equipID > 0 then
+            self.transmogItems[slot] = { transmogID = transmogID, equipID = equipID }
+        else
+            self.transmogItems[slot] = nil
+        end
+    end
+    self:RefreshTransmogTooltip()
+end
+
+function zInspect:ScheduleTransmogRefresh()
+    if not self.transmogUnitName or not self.currentUnit then return end
+    if UnitIsUnit("player", self.currentUnit) then
+        self:RefreshTransmogTooltip()
+    else
+        -- Match the native inspect slot's inventory-change debounce.
+        self.transmogRefreshDelay = 1.5
+        self.transmogRequestCount = 0
+        self.transmogReplyStarted = false
+    end
+end
+
+function zInspect:UpdateTransmogInspect(elapsed)
+    if self.transmogRefreshDelay then
+        self.transmogRefreshDelay = self.transmogRefreshDelay - elapsed
+        if self.transmogRefreshDelay <= 0 then
+            self.transmogRefreshDelay = nil
+            self:RequestTransmogs()
+        end
+    elseif self.transmogUnitName and not self.transmogReplyStarted
+        and self.transmogRequestCount > 0 and self.transmogRequestCount < 3 then
+        self.transmogRetryElapsed = self.transmogRetryElapsed + elapsed
+        if self.transmogRetryElapsed >= 1.5 then self:RequestTransmogs() end
+    end
+    if self.transmogTooltipPending then
+        self.transmogTooltipElapsed = (self.transmogTooltipElapsed or 0) + elapsed
+        if self.transmogTooltipElapsed >= 0.25 then
+            self.transmogTooltipElapsed = 0
+            self:RefreshTransmogTooltip()
+        end
+    end
 end
 
 -- =========================================================================
@@ -845,7 +1017,7 @@ function zInspect:SetTab(tabId)
             modelContainer:Show()
             self:SetGearSlotsVisible(false)
             npcPanel:Show()
-            statsText:SetText("")
+            SetStatsText("")
         else
             modelContainer:Show()
             self:SetGearSlotsVisible(true)
@@ -865,7 +1037,7 @@ function zInspect:SetTab(tabId)
         self:SetGearSlotsVisible(false)
         npcPanel:Hide()
         if TWTalentFrame then TWTalentFrame:Hide() end
-        statsText:SetText("")
+        SetStatsText("")
         self:UpdateHonorTab()
 
     elseif tabId == "talents" then
@@ -875,7 +1047,7 @@ function zInspect:SetTab(tabId)
         self:SetGearSlotsVisible(false)
         npcPanel:Hide()
         if InspectHonorFrame then InspectHonorFrame:Hide() end
-        statsText:SetText("")
+        SetStatsText("")
         guildText:Hide()
         for i = 1, 3 do self.specTabs[i]:Show() end
         self:UpdateTalentsTab()
@@ -1133,22 +1305,49 @@ function zInspect:UpdateTalentsTab()
     self:SelectTalentSpec(self.currentTalentSpec or 1)
 end
 
+local function ApplySlotDisplay(btn, link, texture, alpha, vertexR, vertexG, vertexB, countText, borderR, borderG, borderB, borderA)
+    local state = btn.displayState
+
+    if state.link ~= link then
+        state.link = link
+        btn.itemLink = link
+    end
+    if state.texture ~= texture then
+        state.texture = texture
+        btn.icon:SetTexture(texture)
+    end
+    if alpha and state.alpha ~= alpha then
+        state.alpha = alpha
+        btn.icon:SetAlpha(alpha)
+    end
+    if vertexR and (state.vertexR ~= vertexR or state.vertexG ~= vertexG or state.vertexB ~= vertexB) then
+        state.vertexR, state.vertexG, state.vertexB = vertexR, vertexG, vertexB
+        btn.icon:SetVertexColor(vertexR, vertexG, vertexB)
+    end
+    if state.countText ~= countText then
+        state.countText = countText
+        btn.count:SetText(countText)
+    end
+    if state.borderR ~= borderR or state.borderG ~= borderG or state.borderB ~= borderB or state.borderA ~= borderA then
+        state.borderR, state.borderG, state.borderB, state.borderA = borderR, borderG, borderB, borderA
+        btn:SetBackdropBorderColor(borderR, borderG, borderB, borderA)
+    end
+end
+
+local function ApplyEmptySlot(btn)
+    if btn.emptyTexture then
+        ApplySlotDisplay(btn, nil, btn.emptyTexture, 0.28, 1, 1, 1, "", 0.22, 0.22, 0.22, 0.9)
+    else
+        ApplySlotDisplay(btn, nil, nil, nil, nil, nil, nil, "", 0.22, 0.22, 0.22, 0.9)
+    end
+end
+
 -- Clear / Reset all gear slot displays
 function zInspect:ClearSlots()
-    for id, btn in pairs(slotButtons) do
-        btn.itemLink = nil
-        btn.count:SetText("")
-        local _, emptyTexture = GetInventorySlotInfo(btn.slotDef.name)
-        if emptyTexture then
-            btn.icon:SetTexture(emptyTexture)
-            btn.icon:SetAlpha(0.28)
-            btn.icon:SetVertexColor(1, 1, 1)
-        else
-            btn.icon:SetTexture(nil)
-        end
-        btn:SetBackdropBorderColor(0.22, 0.22, 0.22, 0.9)
+    for _, btn in pairs(slotButtons) do
+        ApplyEmptySlot(btn)
     end
-    statsText:SetText("")
+    SetStatsText("")
 end
 
 -- Parse item quality from link
@@ -1225,12 +1424,36 @@ local function ResolveItemData(unit, slotId)
     return texture, link, count, quality, itemLevel
 end
 
+local function UpdateCachedItem(addon, unitName, id, texture, link, count, quality, itemLevel)
+    local cachedUnit = addon.cache[unitName]
+    if not cachedUnit then
+        cachedUnit = { items = {} }
+        addon.cache[unitName] = cachedUnit
+    elseif not cachedUnit.items then
+        cachedUnit.items = {}
+    end
+
+    local cachedItem = cachedUnit.items[id]
+    if not cachedItem then
+        cachedItem = {}
+        cachedUnit.items[id] = cachedItem
+    end
+
+    cachedItem.texture = texture
+    cachedItem.link = link
+    cachedItem.count = count
+    cachedItem.quality = quality
+    cachedItem.itemLevel = itemLevel
+    return cachedItem
+end
+
 -- Update Gear Slots from live unit, cache, or cross-faction visible items
-function zInspect:UpdateSlots(unit)
+function zInspect:UpdateSlots(unit, liveUpdateConfirmed)
     if not unit or not UnitExists(unit) then return 0, false end
     local hasCachedData = false
     local unitName = UnitName(unit)
     local cachedUnit = unitName and self.cache[unitName]
+    local authoritativeLiveUpdate = liveUpdateConfirmed and not self.isTargetEnemy and not self.isWaitingForRange
     local itemsFound = 0
     local totalItemLevel = 0
     local itemsWithLevel = 0
@@ -1239,7 +1462,9 @@ function zInspect:UpdateSlots(unit)
         local texture, link, count, quality, itemLevel = ResolveItemData(unit, id)
 
         -- If live info is missing, try session cache
-        if not texture and cachedUnit and cachedUnit.items and cachedUnit.items[id] then
+        if not texture and not authoritativeLiveUpdate and cachedUnit and cachedUnit.items
+            and cachedUnit.items[id] and (cachedUnit.items[id].texture or cachedUnit.items[id].link)
+            and (not link or cachedUnit.items[id].link == link) then
             texture = cachedUnit.items[id].texture
             link = cachedUnit.items[id].link
             count = cachedUnit.items[id].count or 1
@@ -1250,37 +1475,15 @@ function zInspect:UpdateSlots(unit)
 
         if texture or link then
             itemsFound = itemsFound + 1
-            btn.itemLink = link
-
-            -- Set icon texture safely (only valid Interface\ string)
-            if type(texture) == "string" and texture ~= "" then
-                btn.icon:SetTexture(texture)
-                btn.icon:SetAlpha(1.0)
-                btn.icon:SetVertexColor(1, 1, 1)
-            else
-                -- Fallback icon if texture still loading into client cache
-                btn.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-                btn.icon:SetAlpha(0.8)
-                btn.icon:SetVertexColor(0.9, 0.9, 0.9)
-            end
-
-            if count and count > 1 then
-                btn.count:SetText(count)
-            else
-                btn.count:SetText("")
-            end
 
             -- Determine quality
             if not quality and link then
                 quality = GetQualityFromLink(link)
             end
 
-            -- Border color by item quality
+            local borderR, borderG, borderB = 0.5, 0.5, 0.5
             if quality and GetItemQualityColor then
-                local r, g, b = GetItemQualityColor(quality)
-                btn:SetBackdropBorderColor(r, g, b, 1)
-            else
-                btn:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+                borderR, borderG, borderB = GetItemQualityColor(quality)
             end
 
             -- Average Item Level calculation if available
@@ -1293,44 +1496,37 @@ function zInspect:UpdateSlots(unit)
                 itemsWithLevel = itemsWithLevel + 1
             end
 
+            -- Apply only changed visual properties. Tooltip data stays live via
+            -- SetInventoryItem; itemLink is retained solely for its fallback.
+            local countText = (count and count > 1) and count or ""
+            if type(texture) == "string" and texture ~= "" then
+                ApplySlotDisplay(btn, link, texture, 1.0, 1, 1, 1, countText, borderR, borderG, borderB, 1)
+            else
+                ApplySlotDisplay(btn, link, "Interface\\Icons\\INV_Misc_QuestionMark", 0.8, 0.9, 0.9, 0.9, countText, borderR, borderG, borderB, 1)
+            end
+
             -- Save to session cache
             if unitName and link then
-                self.cache[unitName] = self.cache[unitName] or { items = {} }
-                self.cache[unitName].items[id] = {
-                    texture = texture,
-                    link = link,
-                    count = count,
-                    quality = quality,
-                    itemLevel = itemLevel,
-                }
+                UpdateCachedItem(self, unitName, id, texture, link, count, quality, itemLevel)
             end
         else
-            btn.itemLink = nil
-            btn.count:SetText("")
-            local _, emptyTexture = GetInventorySlotInfo(btn.slotDef.name)
-            if emptyTexture then
-                btn.icon:SetTexture(emptyTexture)
-                btn.icon:SetAlpha(0.28)
-                btn.icon:SetVertexColor(1, 1, 1)
-            else
-                btn.icon:SetTexture(nil)
+            ApplyEmptySlot(btn)
+            if authoritativeLiveUpdate and unitName and cachedUnit and cachedUnit.items and cachedUnit.items[id] then
+                UpdateCachedItem(self, unitName, id, nil, nil, nil, nil, nil)
             end
-            btn:SetBackdropBorderColor(0.22, 0.22, 0.22, 0.9)
         end
     end
 
+    local summary = ""
     if self.currentTab == "character" and not self.isTargetNPC then
         if itemsWithLevel > 0 then
             local avgIlvl = math.floor((totalItemLevel / itemsWithLevel) * 10) / 10
-            statsText:SetText(string.format("|cff33ffccAvg iLvl:|r %.1f (%d items)", avgIlvl, itemsFound))
+            summary = string.format("|cff33ffccAvg iLvl:|r %.1f (%d items)", avgIlvl, itemsFound)
         elseif itemsFound > 0 then
-            statsText:SetText(string.format("|cff33ffccGear:|r %d items", itemsFound))
-        else
-            statsText:SetText("")
+            summary = string.format("|cff33ffccGear:|r %d items", itemsFound)
         end
-    else
-        statsText:SetText("")
     end
+    SetStatsText(summary)
 
     return itemsFound, hasCachedData
 end
@@ -1361,6 +1557,7 @@ function zInspect:InspectUnit(unit)
     local point = f:GetPoint()
     if not point then CenterInspectFrame() end
     f:Show()
+    self:StartTransmogInspect(unit)
 
     -- Reset to Character tab on fresh inspect
     self:SetTab("character")
@@ -1495,7 +1692,7 @@ function zInspect:InspectUnit(unit)
 
         npcPanel:Show()
         statusBadge:SetText("|cffff8800Creature / NPC|r")
-        statsText:SetText("")
+        SetStatsText("")
     end
 end
 
@@ -1515,6 +1712,7 @@ end
 
 function zInspect:Hide()
     self:StopTalentRetry()
+    self:StartTransmogInspect(nil)
     talentStatusBar:Hide()
     selfTalentPanel:Hide()
     f:Hide()
@@ -1582,6 +1780,7 @@ eventFrame:SetScript("OnEvent", function()
         end
 
     elseif event == "CHAT_MSG_ADDON" then
+        zInspect:HandleTransmogMessage(arg1, arg2, arg4)
         if f:IsShown() and zInspect.currentTab == "talents" and zInspect.talentRetryName
             and arg1 == "TW_CHAT_MSG_WHISPER" and arg4
             and string.lower(arg4) == string.lower(zInspect.talentRetryName) then
@@ -1607,8 +1806,11 @@ eventFrame:SetScript("OnEvent", function()
 
     elseif event == "UNIT_INVENTORY_CHANGED" then
         if f:IsShown() and zInspect.currentUnit and UnitExists(zInspect.currentUnit) then
+            if arg1 == zInspect.currentUnit or (arg1 and UnitExists(arg1) and UnitIsUnit(arg1, zInspect.currentUnit)) then
+                zInspect:ScheduleTransmogRefresh()
+            end
             if zInspect.isTargetPlayer and zInspect.currentTab == "character" then
-                local itemsFound = zInspect:UpdateSlots(zInspect.currentUnit)
+                local itemsFound = zInspect:UpdateSlots(zInspect.currentUnit, true)
                 if itemsFound and itemsFound > 0 then
                     statusBadge:SetText("|cff00ff00Inspected|r")
                 end
@@ -1627,6 +1829,7 @@ end)
 -- and periodically refreshes uncached items on enemy targets
 f:SetScript("OnUpdate", function()
     if not f:IsShown() then return end
+    zInspect:UpdateTransmogInspect(arg1)
 
     if zInspect.talentRetryName and zInspect.currentTab == "talents" then
         zInspect.talentWaitElapsed = zInspect.talentWaitElapsed + arg1
