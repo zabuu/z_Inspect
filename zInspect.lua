@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.16",
+    VERSION = "1.4.17",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -45,7 +45,14 @@ zInspect = {
 SLASH_ZINSPECT1 = "/zinspect"
 SLASH_ZINSPECT2 = "/zi"
 SlashCmdList["ZINSPECT"] = function(msg)
-    if zInspect and zInspect.Toggle then
+    local command = string.lower(msg or "")
+    if command == "tmog" or command == "transmog" then
+        if zInspect and zInspect.PrintTransmogStatus then
+            zInspect:PrintTransmogStatus()
+        elseif DEFAULT_CHAT_FRAME then
+            DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccz|rInspect transmog diagnostics are unavailable.")
+        end
+    elseif zInspect and zInspect.Toggle then
         zInspect:Toggle()
     elseif DEFAULT_CHAT_FRAME then
         DEFAULT_CHAT_FRAME:AddMessage("|cff33ffccz|rInspect did not finish loading. Check FrameXML.log.")
@@ -517,10 +524,15 @@ function zInspect:AddTransmogToTooltip(btn, link)
         -- Turtle_General also routes these packets into the native inspect
         -- cache. Use it when its event handler ran before ours or when another
         -- addon consumed/re-routed the CHAT_MSG_ADDON event.
-        if (not data or data.equipID ~= itemID) and INSPECT_TRANSMOG_DATA then
+        if not data and INSPECT_TRANSMOG_DATA then
             data = INSPECT_TRANSMOG_DATA[btn.slotId]
         end
-        if data and data.equipID == itemID then transmogID = data.transmogID end
+        -- OctoWoW's remote inventory API can expose the visible appearance ID
+        -- while this packet carries the underlying equipped item ID. The
+        -- native inspect tooltip therefore keys transmog data by target+slot
+        -- and does not reject that legitimate mismatch. Our caches are also
+        -- cleared on every target change, so the slot is authoritative here.
+        if data then transmogID = data.transmogID end
     end
     if not transmogID or transmogID <= 0 or transmogID == itemID then
         -- Poll only while this slot remains hovered. This lets the native
@@ -591,6 +603,25 @@ function zInspect:RequestTransmogs()
     self.transmogRetryElapsed = 0
 end
 
+function zInspect:PrintTransmogStatus()
+    local localSlots, nativeSlots = 0, 0
+    for _, data in pairs(self.transmogItems or {}) do
+        if data and data.transmogID then localSlots = localSlots + 1 end
+    end
+    for _, data in pairs(INSPECT_TRANSMOG_DATA or {}) do
+        if data and data.transmogID then nativeSlots = nativeSlots + 1 end
+    end
+    local target = self.transmogUnitName or "none"
+    local packets = self.transmogPacketCount or 0
+    local requests = self.transmogRequestCount or 0
+    local sender = self.transmogLastSender or "none"
+    if DEFAULT_CHAT_FRAME then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "|cff33ffccz|rInspect transmog: target=%s requests=%d packets=%d local=%d native=%d last=%s",
+            target, requests, packets, localSlots, nativeSlots, sender))
+    end
+end
+
 function zInspect:PrepareNativeTransmogInspect(unit)
     if IsAddOnLoaded and not IsAddOnLoaded("Blizzard_InspectUI") then
         if UIParentLoadAddOn then
@@ -626,6 +657,8 @@ function zInspect:StartTransmogInspect(unit)
     self.transmogUnitName = nil
     self.transmogReplyStarted = false
     self.transmogRequestCount = 0
+    self.transmogPacketCount = 0
+    self.transmogLastSender = nil
     self.transmogRetryElapsed = 0
     self.transmogRefreshDelay = nil
     self.transmogTooltipPending = nil
@@ -640,6 +673,10 @@ function zInspect:StartTransmogInspect(unit)
 end
 
 function zInspect:HandleTransmogMessage(prefix, message, sender)
+    if type(message) == "string" and string.find(message, "INSTransmogs", 1, true) == 1 then
+        self.transmogPacketCount = (self.transmogPacketCount or 0) + 1
+        self.transmogLastSender = type(sender) == "string" and sender or "?"
+    end
     if prefix ~= "TW_CHAT_MSG_WHISPER" or type(message) ~= "string" or type(sender) ~= "string"
         or not f:IsShown() or not self.transmogUnitName or not self.currentUnit
         or not UnitExists(self.currentUnit) or UnitName(self.currentUnit) ~= self.transmogUnitName

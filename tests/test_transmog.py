@@ -114,10 +114,12 @@ class TransmogTests(unittest.TestCase):
         self.reply("INSTransmogs;16;200;100", "Beta")
         self.assertIn("Hatchet Appearance", self.show())
 
-    def test_equipped_id_mismatch_start_and_zero_clear_appearance(self):
+    def test_remote_visible_id_mismatch_start_and_zero_clear_appearance(self):
         self.start()
         self.reply("INSTransmogs;16;200;999")
-        self.assertNotIn("Transmogrified", self.show())
+        # OctoWoW may expose the visible appearance ID in the remote item link;
+        # its native tooltip therefore trusts the target-scoped slot packet.
+        self.assertIn("Hatchet Appearance", self.show())
         self.reply("INSTransmogs;16;200;100")
         self.assertIn("Hatchet Appearance", self.show())
         self.reply("INSTransmogs;start;0;0")

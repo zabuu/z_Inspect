@@ -34,8 +34,11 @@ zInspect loads the native inspect module, assigns its hidden `InspectFrame.unit`
 then sends the native request on player inspection. This unit assignment is
 required by OctoWoW's reply validator even though zInspect does not display the
 native inspect window. zInspect accepts replies only from the inspected player
-and checks each reply's equipped item ID against the tooltip item before
-displaying it. It can read both its own packet cache and OctoWoW's
+and scopes every reply to that player and equipment slot. The equipped item ID
+is retained for diagnostics but is not used as a display gate: OctoWoW can
+expose the visible appearance ID through its remote inventory API while the
+packet carries the underlying equipped item ID, and the native tooltip likewise
+trusts the target-scoped slot. zInspect can read both its own packet cache and OctoWoW's
 `INSPECT_TRANSMOG_DATA` cache, covering either event-handler order. A start
 packet clears previous slot data. Changing players clears all appearance data
 and pending tooltip work. The player's own appearance comes from
@@ -52,11 +55,14 @@ first valid reply stops retries. Inventory refresh requests use the native
 1.5-second debounce. Appearance polling runs only while an unresolved tooltip
 is hovered; regular gear and talent query cadence is unchanged.
 
+`/zi tmog` prints the current target, request and packet counts, populated local
+and native slot counts, and the last packet sender for live diagnosis.
+
 ## Validation
 
 Run `python -m unittest discover -s tests -v` with Lupa installed. The transmog
 tests load the complete addon under Lua 5.1 and cover protocol routing, sender
-and equipped-item validation, target changes, reset packets, self inspection,
+validation, remote visible/equipped ID differences, target changes, reset packets, self inspection,
 asynchronous item names, live tooltip preference, hyperlink fallback, retry
 limits, and inventory debounce. Existing gear polling regressions also run.
 
