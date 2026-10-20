@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.15",
+    VERSION = "1.4.16",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -514,9 +514,22 @@ function zInspect:AddTransmogToTooltip(btn, link)
         transmogID = TransmogStatus and tonumber(TransmogStatus[itemID])
     elseif self.transmogUnitName == self.currentUnitName then
         local data = self.transmogItems and self.transmogItems[btn.slotId]
+        -- Turtle_General also routes these packets into the native inspect
+        -- cache. Use it when its event handler ran before ours or when another
+        -- addon consumed/re-routed the CHAT_MSG_ADDON event.
+        if (not data or data.equipID ~= itemID) and INSPECT_TRANSMOG_DATA then
+            data = INSPECT_TRANSMOG_DATA[btn.slotId]
+        end
         if data and data.equipID == itemID then transmogID = data.transmogID end
     end
-    if not transmogID or transmogID <= 0 or transmogID == itemID then return end
+    if not transmogID or transmogID <= 0 or transmogID == itemID then
+        -- Poll only while this slot remains hovered. This lets the native
+        -- cache complete asynchronously without adding a permanent OnUpdate.
+        if not UnitIsUnit("player", self.currentUnit) then
+            self.transmogTooltipPending = btn
+        end
+        return
+    end
 
     local itemName = GetItemInfo(transmogID)
     if not itemName then
@@ -578,6 +591,33 @@ function zInspect:RequestTransmogs()
     self.transmogRetryElapsed = 0
 end
 
+function zInspect:PrepareNativeTransmogInspect(unit)
+    if IsAddOnLoaded and not IsAddOnLoaded("Blizzard_InspectUI") then
+        if UIParentLoadAddOn then
+            pcall(UIParentLoadAddOn, "Blizzard_InspectUI")
+        elseif LoadAddOn then
+            pcall(LoadAddOn, "Blizzard_InspectUI")
+        end
+    end
+
+    -- The native reply handler validates packets against InspectFrame.unit.
+    -- zInspect normally keeps that frame hidden, but it still needs the unit
+    -- assignment for inspected-player transmog replies to be accepted.
+    if InspectFrame then
+        InspectFrame.unit = unit
+        InspectFrame:Hide()
+    end
+
+    -- Do not allow the previous inspected player's native cache to appear
+    -- while the new request is in flight.
+    if INSPECT_TRANSMOG_DATA then
+        for _, data in pairs(INSPECT_TRANSMOG_DATA) do
+            data.transmogID = nil
+            data.equipID = nil
+        end
+    end
+end
+
 function zInspect:StartTransmogInspect(unit)
     if self.hoveredGearSlot and GameTooltip:IsOwned(self.hoveredGearSlot) then
         GameTooltip:Hide()
@@ -593,6 +633,9 @@ function zInspect:StartTransmogInspect(unit)
     self.hoveredGearSlot = nil
     if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return end
     self.transmogUnitName = UnitName(unit)
+    if not UnitIsUnit("player", unit) then
+        self:PrepareNativeTransmogInspect(unit)
+    end
     self:RequestTransmogs()
 end
 

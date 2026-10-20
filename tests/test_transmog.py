@@ -15,6 +15,13 @@ SENT_MESSAGES = {}
 function SendAddonMessage(prefix, message, channel)
     table.insert(SENT_MESSAGES, { prefix = prefix, message = message, channel = channel })
 end
+LOADED_ADDONS = {}
+function IsAddOnLoaded(name) return LOADED_ADDONS[name] == true end
+function UIParentLoadAddOn(name) LOADED_ADDONS[name] = true end
+InspectFrame = CreateFrame("Frame", "InspectFrame", UIParent)
+INSPECT_TRANSMOG_DATA = {
+    [16] = { frame = "InspectMainHandSlot", transmogID = nil, equipID = nil },
+}
 TRANSMOG_CHANGED_TO = "Transmogrified to:"
 ADDON_MSG_FIELD_DELIMITER = ";"
 GameTooltip:CreateFontString("GameTooltipTextLeft2")
@@ -69,6 +76,9 @@ class TransmogTests(unittest.TestCase):
     def test_native_request_and_reply_draw_on_custom_slot(self):
         self.start()
         sent = self.g.SENT_MESSAGES[1]
+        self.assertTrue(self.g.LOADED_ADDONS["Blizzard_InspectUI"])
+        self.assertEqual(self.g.InspectFrame.unit, "target")
+        self.assertFalse(self.g.InspectFrame.IsShown(self.g.InspectFrame))
         self.assertEqual(sent.prefix, "TW_CHAT_MSG_WHISPER<Alpha>")
         self.assertEqual(sent.message, "INSShowTransmogs")
         self.assertEqual(sent.channel, "GUILD")
@@ -79,6 +89,15 @@ class TransmogTests(unittest.TestCase):
         self.assertEqual(self.g.LIVE_CALLS, 1)
         self.assertEqual(self.g.LINK_CALLS, 0)
         self.assertEqual(self.show().count("Transmogrified to:"), 1)
+
+    def test_native_reply_cache_is_used_when_addon_event_order_skips_local_handler(self):
+        self.start()
+        self.assertNotIn("Transmogrified", self.show())
+        self.assertTrue(self.lua.eval("zInspect.transmogTooltipPending == zInspectSlot_MainHandSlot"))
+        self.lua.execute("INSPECT_TRANSMOG_DATA[16].transmogID=200; INSPECT_TRANSMOG_DATA[16].equipID=100")
+        self.addon.UpdateTransmogInspect(self.addon, 0.25)
+        self.assertIn("Hatchet Appearance", self.g.GameTooltipTextLeft2._text)
+        self.assertIsNone(self.addon.transmogTooltipPending)
 
     def test_other_senders_malformed_messages_and_target_switch_do_not_leak(self):
         self.start()

@@ -30,11 +30,16 @@ to answer the same protocol used by the default inspect window.
 
 ## zInspect integration
 
-zInspect sends the native request on player inspection, accepts replies only
-from that inspected player, and checks each reply's equipped item ID against
-the tooltip item before displaying it. A start packet clears previous slot
-data. Changing players clears all appearance data and pending tooltip work.
-The player's own appearance comes from `TransmogStatus`.
+zInspect loads the native inspect module, assigns its hidden `InspectFrame.unit`,
+then sends the native request on player inspection. This unit assignment is
+required by OctoWoW's reply validator even though zInspect does not display the
+native inspect window. zInspect accepts replies only from the inspected player
+and checks each reply's equipped item ID against the tooltip item before
+displaying it. It can read both its own packet cache and OctoWoW's
+`INSPECT_TRANSMOG_DATA` cache, covering either event-handler order. A start
+packet clears previous slot data. Changing players clears all appearance data
+and pending tooltip work. The player's own appearance comes from
+`TransmogStatus`.
 
 The tooltip first attempts `SetInventoryItem`, then uses its existing link
 fallback when live data is unavailable. zInspect prepends the native localized
