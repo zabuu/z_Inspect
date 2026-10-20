@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.4.17",
+    VERSION = "1.5.0",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -35,6 +35,13 @@ zInspect = {
     talentReplySource = nil,
     nativeTalentHooked = false,
     talentVisualElapsed = 0,
+    professionData = {},
+    professionUnitName = nil,
+    professionRequestCount = 0,
+    professionRetryElapsed = 0,
+    professionReplyStarted = false,
+    professionReplyComplete = false,
+    professionResponseElapsed = 0,
     cache = {},
     tabs = {},
     specTabs = {},
@@ -88,6 +95,32 @@ local EQUIPMENT_SLOTS = {
     { id = 17, name = "SecondaryHandSlot", label = "Off Hand",   side = "BOTTOM", index = 2 },
     { id = 18, name = "RangedSlot",        label = "Ranged",     side = "BOTTOM", index = 3 },
 }
+
+-- ClassicAPI skill-line IDs. Remote profession inspection is cooperative:
+-- another zInspect client sends ranks and the compact recipe bitfield used by
+-- ClassicAPI's built-in read-only trade-link viewer.
+local PROFESSION_SKILLS = {
+    { id = 171, icon = "Trade_Alchemy" },
+    { id = 164, icon = "Trade_BlackSmithing" },
+    { id = 185, icon = "INV_Misc_Food_15" },
+    { id = 333, icon = "Trade_Engraving" },
+    { id = 202, icon = "Trade_Engineering" },
+    { id = 129, icon = "Spell_Holy_SealOfSacrifice" },
+    { id = 165, icon = "INV_Misc_ArmorKit_17" },
+    { id = 197, icon = "Trade_Tailoring" },
+    { id = 186, icon = "Trade_Mining" },
+    { id = 182, icon = "Trade_Herbalism" },
+    { id = 393, icon = "INV_Misc_Pelt_Wolf_01" },
+    { id = 356, icon = "Trade_Fishing" },
+    { id = 142, icon = "Trade_Survival" },
+    { id = 755, icon = "INV_Misc_Gem_01" },
+}
+
+local PROFESSION_BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local PROFESSION_ZERO_BITS = string.rep and string.rep("A", 171) or
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+local PROFESSION_RETRY_INTERVAL = 1.5
+local PROFESSION_MAX_REQUESTS = 3
 
 -- Class color palette fallback
 local CLASS_COLORS = {
@@ -261,6 +294,61 @@ selfTalentPanel:SetBackdropColor(0.04, 0.04, 0.04, 0.92)
 selfTalentPanel:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
 selfTalentPanel:Hide()
 local selfTalentButtons = {}
+
+local professionPanel = CreateFrame("Frame", "zInspectProfessionPanel", f)
+professionPanel:SetWidth(318)
+professionPanel:SetHeight(326)
+professionPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -58)
+professionPanel:SetFrameStrata("DIALOG")
+professionPanel:SetFrameLevel(2)
+professionPanel:SetBackdrop(flatBackdrop)
+professionPanel:SetBackdropColor(0.04, 0.04, 0.04, 0.92)
+professionPanel:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
+professionPanel:Hide()
+
+local professionStatusText = professionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+professionStatusText:SetPoint("TOPLEFT", professionPanel, "TOPLEFT", 8, -8)
+professionStatusText:SetWidth(302)
+professionStatusText:SetJustifyH("LEFT")
+professionStatusText:SetText("Profession data unavailable")
+
+local professionRows = {}
+for i = 1, table.getn(PROFESSION_SKILLS) do
+    local row = CreateFrame("Button", "zInspectProfessionRow" .. i, professionPanel)
+    row:SetWidth(302)
+    row:SetHeight(20)
+    row:SetPoint("TOPLEFT", professionPanel, "TOPLEFT", 8, -27 - ((i - 1) * 21))
+    row:SetBackdrop(flatBackdrop)
+    row:SetBackdropColor(0.08, 0.08, 0.08, 0.96)
+    row:SetBackdropBorderColor(0.16, 0.16, 0.16, 1)
+    row:Hide()
+
+    row.icon = row:CreateTexture(nil, "ARTWORK")
+    row.icon:SetWidth(17)
+    row.icon:SetHeight(17)
+    row.icon:SetPoint("LEFT", row, "LEFT", 2, 0)
+
+    row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.label:SetPoint("LEFT", row, "LEFT", 23, 0)
+    row.label:SetWidth(204)
+    row.label:SetJustifyH("LEFT")
+
+    row.browse = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    row.browse:SetPoint("RIGHT", row, "RIGHT", -7, 0)
+    row.browse:SetText("Browse")
+    row.browse:SetTextColor(1.0, 0.82, 0.0)
+
+    row:SetScript("OnClick", function()
+        if this.profession then zInspect:OpenProfession(this.profession) end
+    end)
+    row:SetScript("OnEnter", function()
+        if this.profession and this.profession.bits ~= "" then
+            this:SetBackdropColor(0.16, 0.16, 0.16, 1)
+        end
+    end)
+    row:SetScript("OnLeave", function() this:SetBackdropColor(0.08, 0.08, 0.08, 0.96) end)
+    professionRows[i] = row
+end
 
 -- Discrete, subtle branding at bottom right
 local brandText = f:CreateFontString("zInspectBrandText", "OVERLAY", "GameFontDisableSmall")
@@ -1018,7 +1106,7 @@ function zInspect:FormatTalentsFrame()
 end
 
 -- =========================================================================
--- BOTTOM TABS ([Character] [Honor] [Talents])
+-- BOTTOM TABS ([Character] [Honor] [Talents] [Professions])
 -- Elevated to FULLSCREEN_DIALOG strata so nothing can ever draw over them
 -- =========================================================================
 local function CreateBottomTab(id, name, width, label)
@@ -1059,10 +1147,12 @@ end
 local tabChar   = CreateBottomTab("character", "Character", 68, "Character")
 local tabHonor  = CreateBottomTab("honor",     "Honor",     52, "Honor")
 local tabTalent = CreateBottomTab("talents",   "Talents",   56, "Talents")
+local tabProf   = CreateBottomTab("professions", "Professions", 78, "Professions")
 
 tabChar:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 7)
 tabHonor:SetPoint("LEFT", tabChar, "RIGHT", 3, 0)
 tabTalent:SetPoint("LEFT", tabHonor, "RIGHT", 3, 0)
+tabProf:SetPoint("LEFT", tabTalent, "RIGHT", 3, 0)
 
 -- Switch Tab Implementation
 function zInspect:SetTab(tabId)
@@ -1087,6 +1177,7 @@ function zInspect:SetTab(tabId)
 
     if tabId == "character" then
         selfTalentPanel:Hide()
+        professionPanel:Hide()
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
@@ -1110,6 +1201,7 @@ function zInspect:SetTab(tabId)
 
     elseif tabId == "honor" then
         selfTalentPanel:Hide()
+        professionPanel:Hide()
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         for i = 1, 3 do self.specTabs[i]:Hide() end
@@ -1121,6 +1213,7 @@ function zInspect:SetTab(tabId)
         self:UpdateHonorTab()
 
     elseif tabId == "talents" then
+        professionPanel:Hide()
         f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
         f:SetBackdropBorderColor(0, 0, 0, 1)
         modelContainer:Hide()
@@ -1131,7 +1224,240 @@ function zInspect:SetTab(tabId)
         guildText:Hide()
         for i = 1, 3 do self.specTabs[i]:Show() end
         self:UpdateTalentsTab()
+    elseif tabId == "professions" then
+        self:StopTalentRetry()
+        talentStatusBar:Hide()
+        selfTalentPanel:Hide()
+        modelContainer:Hide()
+        self:SetGearSlotsVisible(false)
+        npcPanel:Hide()
+        if InspectHonorFrame then InspectHonorFrame:Hide() end
+        if TWTalentFrame then TWTalentFrame:Hide() end
+        SetStatsText("")
+        guildText:Hide()
+        for i = 1, 3 do self.specTabs[i]:Hide() end
+        professionPanel:Show()
+        self:UpdateProfessionsTab()
     end
+end
+
+local function ProfessionName(skillID)
+    if C_SpellBook and C_SpellBook.GetSkillLineName then
+        local ok, name = pcall(C_SpellBook.GetSkillLineName, skillID)
+        if ok and name and name ~= "" then return name end
+    end
+    return "Profession " .. skillID
+end
+
+local function ProfessionDefinition(skillID)
+    for _, definition in ipairs(PROFESSION_SKILLS) do
+        if definition.id == skillID then return definition end
+    end
+end
+
+local function EncodeKnownRecipes(skillID)
+    if not C_TradeSkillUI or not C_TradeSkillUI.GetTradeSkillListRecipes or not IsPlayerSpell then
+        return ""
+    end
+    local ok, recipes = pcall(C_TradeSkillUI.GetTradeSkillListRecipes, skillID, PROFESSION_ZERO_BITS)
+    if not ok or type(recipes) ~= "table" or table.getn(recipes) == 0 then return "" end
+
+    local encoded = ""
+    local value, used = 0, 0
+    local weights = { 1, 2, 4, 8, 16, 32 }
+    for i = 1, table.getn(recipes) do
+        local recipe = recipes[i]
+        if recipe and recipe.spellID and IsPlayerSpell(recipe.spellID) then
+            value = value + weights[used + 1]
+        end
+        used = used + 1
+        if used == 6 then
+            encoded = encoded .. string.sub(PROFESSION_BASE64, value + 1, value + 1)
+            value, used = 0, 0
+        end
+    end
+    if used > 0 then
+        encoded = encoded .. string.sub(PROFESSION_BASE64, value + 1, value + 1)
+    end
+    return encoded
+end
+
+function zInspect:GetLocalProfessions()
+    local data = {}
+    if not C_SpellBook or not C_SpellBook.GetSkillLineRank then return data end
+    for _, definition in ipairs(PROFESSION_SKILLS) do
+        local ok, current, maximum = pcall(C_SpellBook.GetSkillLineRank, definition.id)
+        if ok and current and tonumber(current) and tonumber(current) > 0 then
+            table.insert(data, {
+                id = definition.id,
+                current = tonumber(current),
+                maximum = tonumber(maximum) or tonumber(current),
+                bits = EncodeKnownRecipes(definition.id),
+            })
+        end
+    end
+    return data
+end
+
+function zInspect:RenderProfessions()
+    for _, row in ipairs(professionRows) do
+        row.profession = nil
+        row:Hide()
+    end
+    local count = table.getn(self.professionData or {})
+    for i = 1, count do
+        local profession = self.professionData[i]
+        local row = professionRows[i]
+        if row then
+            local definition = ProfessionDefinition(profession.id)
+            row.profession = profession
+            row.icon:SetTexture("Interface\\Icons\\" .. (definition and definition.icon or "INV_Misc_QuestionMark"))
+            row.label:SetText(string.format("%s  |cffaaaaaa%d / %d|r",
+                ProfessionName(profession.id), profession.current or 0, profession.maximum or 0))
+            if profession.bits and profession.bits ~= "" then
+                row.browse:SetText("Browse")
+                row.browse:SetTextColor(1.0, 0.82, 0.0)
+                row:EnableMouse(true)
+            else
+                row.browse:SetText("No recipes")
+                row.browse:SetTextColor(0.45, 0.45, 0.45)
+                row:EnableMouse(false)
+            end
+            row:Show()
+        end
+    end
+
+    if count > 0 then
+        local owner = self.professionUnitName or self.currentUnitName or "player"
+        professionStatusText:SetText(string.format("%s's professions (%d)", owner, count))
+    elseif self.professionReplyComplete then
+        professionStatusText:SetText("No professions reported")
+    end
+end
+
+function zInspect:OpenProfession(profession)
+    if not profession or not profession.bits or profession.bits == "" or not SetItemRef then return end
+    local owner = self.professionUnitName or self.currentUnitName or UnitName("player") or "Player"
+    local name = ProfessionName(profession.id)
+    local payload = string.format("trade:%d:%d:%d:%s:%s", profession.id,
+        profession.current or 0, profession.maximum or 0, owner, profession.bits)
+    local link = "|cffffd000|H" .. payload .. "|h[" .. name .. "]|h|r"
+    SetItemRef(payload, link, "LeftButton")
+end
+
+function zInspect:SendProfessionMessage(target, message)
+    if SendAddonMessage and target and target ~= "" then
+        SendAddonMessage("TW_CHAT_MSG_WHISPER<" .. target .. ">", message, "GUILD")
+    end
+end
+
+function zInspect:SendProfessions(target)
+    local professions = self:GetLocalProfessions()
+    self:SendProfessionMessage(target, "ZINSProf;start;1")
+    for _, profession in ipairs(professions) do
+        local bits = profession.bits or ""
+        local total = math.max(1, math.ceil(string.len(bits) / 150))
+        for part = 1, total do
+            local chunk = string.sub(bits, ((part - 1) * 150) + 1, part * 150)
+            if chunk == "" then chunk = "-" end
+            self:SendProfessionMessage(target, string.format("ZINSProf;skill;%d;%d;%d;%d;%d;%s",
+                profession.id, profession.current, profession.maximum, part, total, chunk))
+        end
+    end
+    self:SendProfessionMessage(target, "ZINSProf;end;1")
+end
+
+function zInspect:RequestProfessions()
+    if not self.professionUnitName or not self.currentUnit or not UnitExists(self.currentUnit)
+        or UnitName(self.currentUnit) ~= self.professionUnitName or UnitIsUnit("player", self.currentUnit) then return end
+    self:SendProfessionMessage(self.professionUnitName, "ZINSProf;request;1")
+    self.professionRequestCount = self.professionRequestCount + 1
+    self.professionRetryElapsed = 0
+    professionStatusText:SetText(string.format("Requesting %s's professions... (%d/%d)",
+        self.professionUnitName, self.professionRequestCount, PROFESSION_MAX_REQUESTS))
+end
+
+function zInspect:StartProfessionInspect(unit)
+    self.professionData = {}
+    self.professionChunks = {}
+    self.professionUnitName = nil
+    self.professionRequestCount = 0
+    self.professionRetryElapsed = 0
+    self.professionReplyStarted = false
+    self.professionReplyComplete = false
+    self.professionResponseElapsed = 0
+    if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return end
+    self.professionUnitName = UnitName(unit)
+    if UnitIsUnit("player", unit) then
+        self.professionData = self:GetLocalProfessions()
+        self.professionReplyComplete = true
+    end
+end
+
+function zInspect:UpdateProfessionsTab()
+    if not self.currentUnit or not UnitExists(self.currentUnit) then
+        professionStatusText:SetText("No player selected")
+        return
+    end
+    if UnitIsUnit("player", self.currentUnit) then
+        self.professionData = self:GetLocalProfessions()
+        self.professionReplyComplete = true
+        self:RenderProfessions()
+    elseif self.professionReplyComplete then
+        self:RenderProfessions()
+    elseif self.professionRequestCount == 0 then
+        self:RenderProfessions()
+        self:RequestProfessions()
+    end
+end
+
+function zInspect:HandleProfessionMessage(prefix, message, sender)
+    if prefix ~= "TW_CHAT_MSG_WHISPER" or type(message) ~= "string" or type(sender) ~= "string" then return end
+    if message == "ZINSProf;request;1" then
+        self:SendProfessions(sender)
+        return
+    end
+    if not f:IsShown() or not self.professionUnitName or not self.currentUnit
+        or not UnitExists(self.currentUnit) or UnitName(self.currentUnit) ~= self.professionUnitName
+        or string.lower(sender) ~= string.lower(self.professionUnitName) then return end
+
+    if message == "ZINSProf;start;1" then
+        self.professionData = {}
+        self.professionChunks = {}
+        self.professionReplyStarted = true
+        self.professionReplyComplete = false
+        self.professionResponseElapsed = 0
+        professionStatusText:SetText("Receiving profession data...")
+        return
+    end
+    if message == "ZINSProf;end;1" and self.professionReplyStarted then
+        self.professionReplyComplete = true
+        self.professionReplyStarted = false
+        if self.currentTab == "professions" then self:RenderProfessions() end
+        return
+    end
+
+    local _, _, skillID, current, maximum, part, total, chunk = string.find(message,
+        "^ZINSProf;skill;(%d+);(%d+);(%d+);(%d+);(%d+);(.*)$")
+    skillID, current, maximum, part, total = tonumber(skillID), tonumber(current), tonumber(maximum), tonumber(part), tonumber(total)
+    if not skillID or not current or not maximum or not part or not total or part < 1 or part > total or total > 2
+        or current > 1000 or maximum > 1000 or (chunk ~= "-" and string.find(chunk, "[^A-Za-z0-9+/]")) then return end
+    if not ProfessionDefinition(skillID) or not self.professionReplyStarted then return end
+    local pending = self.professionChunks[skillID]
+    if not pending or pending.total ~= total then
+        pending = { id = skillID, current = current, maximum = maximum, total = total, chunks = {} }
+        self.professionChunks[skillID] = pending
+    end
+    pending.chunks[part] = chunk == "-" and "" or chunk
+    self.professionResponseElapsed = 0
+    local bits = ""
+    for i = 1, total do
+        if pending.chunks[i] == nil then return end
+        bits = bits .. pending.chunks[i]
+    end
+    table.insert(self.professionData, { id = skillID, current = current, maximum = maximum, bits = bits })
+    self.professionChunks[skillID] = nil
+    if self.currentTab == "professions" then self:RenderProfessions() end
 end
 
 -- Format Honor Frame cleanly inside zInspectFrame and prevent it from blocking tabs
@@ -1638,6 +1964,7 @@ function zInspect:InspectUnit(unit)
     if not point then CenterInspectFrame() end
     f:Show()
     self:StartTransmogInspect(unit)
+    self:StartProfessionInspect(unit)
 
     -- Reset to Character tab on fresh inspect
     self:SetTab("character")
@@ -1686,6 +2013,7 @@ function zInspect:InspectUnit(unit)
     if self.isTargetPlayer then
         tabHonor:Show()
         tabTalent:Show()
+        tabProf:Show()
         npcPanel:Hide()
         self:SetGearSlotsVisible(true)
 
@@ -1739,6 +2067,7 @@ function zInspect:InspectUnit(unit)
         -- NPC / Creature / Monster / Boss
         tabHonor:Hide()
         tabTalent:Hide()
+        tabProf:Hide()
         self:SetGearSlotsVisible(false)
         guildText:Hide()
         self.isWaitingForRange = false
@@ -1795,6 +2124,7 @@ function zInspect:Hide()
     self:StartTransmogInspect(nil)
     talentStatusBar:Hide()
     selfTalentPanel:Hide()
+    professionPanel:Hide()
     f:Hide()
     f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
     self.isWaitingForRange = false
@@ -1858,9 +2188,15 @@ eventFrame:SetScript("OnEvent", function()
             and UnitExists(zInspect.currentUnit) and UnitIsUnit("player", zInspect.currentUnit) then
             zInspect:RenderSelfTalents()
         end
+        if f:IsShown() and zInspect.currentTab == "professions" and zInspect.currentUnit
+            and UnitExists(zInspect.currentUnit) and UnitIsUnit("player", zInspect.currentUnit) then
+            zInspect.professionData = zInspect:GetLocalProfessions()
+            zInspect:RenderProfessions()
+        end
 
     elseif event == "CHAT_MSG_ADDON" then
         zInspect:HandleTransmogMessage(arg1, arg2, arg4)
+        zInspect:HandleProfessionMessage(arg1, arg2, arg4)
         if f:IsShown() and zInspect.currentTab == "talents" and zInspect.talentRetryName
             and arg1 == "TW_CHAT_MSG_WHISPER" and arg4
             and string.lower(arg4) == string.lower(zInspect.talentRetryName) then
@@ -1910,6 +2246,28 @@ end)
 f:SetScript("OnUpdate", function()
     if not f:IsShown() then return end
     zInspect:UpdateTransmogInspect(arg1)
+
+    if zInspect.currentTab == "professions" and zInspect.professionUnitName
+        and not zInspect.professionReplyComplete
+        and zInspect.currentUnit and UnitExists(zInspect.currentUnit)
+        and not UnitIsUnit("player", zInspect.currentUnit) then
+        if zInspect.professionReplyStarted then
+            zInspect.professionResponseElapsed = zInspect.professionResponseElapsed + arg1
+            if zInspect.professionResponseElapsed >= 3 then
+                zInspect.professionReplyStarted = false
+                zInspect.professionRetryElapsed = PROFESSION_RETRY_INTERVAL
+            end
+        else
+            zInspect.professionRetryElapsed = zInspect.professionRetryElapsed + arg1
+            if zInspect.professionRequestCount < PROFESSION_MAX_REQUESTS
+                and zInspect.professionRetryElapsed >= PROFESSION_RETRY_INTERVAL then
+                zInspect:RequestProfessions()
+            elseif zInspect.professionRequestCount >= PROFESSION_MAX_REQUESTS
+                and zInspect.professionRetryElapsed >= PROFESSION_RETRY_INTERVAL then
+                professionStatusText:SetText("No reply. The player needs zInspect 1.5+ to share professions.")
+            end
+        end
+    end
 
     if zInspect.talentRetryName and zInspect.currentTab == "talents" then
         zInspect.talentWaitElapsed = zInspect.talentWaitElapsed + arg1

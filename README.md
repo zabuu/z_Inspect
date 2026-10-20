@@ -24,6 +24,7 @@ Part of the **zSuite** collection of addons.
     - **Ctrl-Click Slot**: Previews item in Dressing Room.
   - **Honor Tab**: Fully embedded Vanilla PvP honor summary (Session, Yesterday, This Week, Last Week, Lifetime stats, and Rank Progress Bar) cleanly scaled with non-blocking mouse interaction.
   - **Talents Tab**: Embedded talent tree with custom tree tabs (e.g. Beast Mastery, Marksmanship, Survival), crash-safe Turtle WoW talent data mapping, and proportional scaling fitting all 7 tiers comfortably without clipping or window bleed.
+  - **Professions Tab**: Lists profession ranks and opens ClassicAPI's read-only recipe browser. Your own professions are immediate; other players can share theirs when they also run zInspect 1.5 or newer.
 - **Sleek & Discrete Design**:
   - Matches standard Blizzard `CharacterFrame` and pfUI dimensions (338 x 424 px).
   - Flat, borderless dark aesthetic with subtle branding.
