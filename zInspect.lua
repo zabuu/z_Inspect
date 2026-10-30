@@ -12,7 +12,7 @@ local _G = _G or getfenv(0)
 -- Global addon table
 zInspect = {
     TITLE = "|cff33ffccz|rInspect",
-    VERSION = "1.5.0",
+    VERSION = "1.5.1",
     currentUnit = nil,
     currentUnitName = nil,
     currentTab = "character",
@@ -42,6 +42,10 @@ zInspect = {
     professionReplyStarted = false,
     professionReplyComplete = false,
     professionResponseElapsed = 0,
+    professionSendQueue = {},
+    professionSendElapsed = 0,
+    professionSyncClock = 0,
+    professionLastResponse = {},
     cache = {},
     tabs = {},
     specTabs = {},
@@ -121,6 +125,8 @@ local PROFESSION_ZERO_BITS = string.rep and string.rep("A", 171) or
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 local PROFESSION_RETRY_INTERVAL = 1.5
 local PROFESSION_MAX_REQUESTS = 3
+local PROFESSION_WHISPER_HEADER = "/ZINSProf;"
+local PROFESSION_SEND_INTERVAL = 0.5
 
 -- Class color palette fallback
 local CLASS_COLORS = {
@@ -306,7 +312,7 @@ professionPanel:SetBackdropColor(0.04, 0.04, 0.04, 0.92)
 professionPanel:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
 professionPanel:Hide()
 
-local professionStatusText = professionPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+local professionStatusText = professionPanel:CreateFontString("zInspectProfessionStatusText", "OVERLAY", "GameFontHighlightSmall")
 professionStatusText:SetPoint("TOPLEFT", professionPanel, "TOPLEFT", 8, -8)
 professionStatusText:SetWidth(302)
 professionStatusText:SetJustifyH("LEFT")
@@ -1327,7 +1333,9 @@ function zInspect:RenderProfessions()
         end
     end
 
-    if count > 0 then
+    if self.professionError then
+        professionStatusText:SetText(self.professionError)
+    elseif count > 0 then
         local owner = self.professionUnitName or self.currentUnitName or "player"
         professionStatusText:SetText(string.format("%s's professions (%d)", owner, count))
     elseif self.professionReplyComplete then
@@ -1346,14 +1354,58 @@ function zInspect:OpenProfession(profession)
 end
 
 function zInspect:SendProfessionMessage(target, message)
-    if SendAddonMessage and target and target ~= "" then
-        SendAddonMessage("TW_CHAT_MSG_WHISPER<" .. target .. ">", message, "GUILD")
+    if not SendChatMessage or type(target) ~= "string" or target == ""
+        or type(message) ~= "string" or string.len(message) > 253 then return false end
+    if table.getn(self.professionSendQueue) >= 64 then return false end
+    table.insert(self.professionSendQueue, { target = target, message = message,
+        request = message == "ZINSProf;request;1", unit = self.currentUnit })
+    return true
+end
+
+function zInspect:UpdateProfessionTransport(elapsed)
+    self.professionSyncClock = self.professionSyncClock + elapsed
+    self.professionSendElapsed = math.min(PROFESSION_SEND_INTERVAL, self.professionSendElapsed + elapsed)
+    if self.professionSendElapsed < PROFESSION_SEND_INTERVAL or table.getn(self.professionSendQueue) == 0 then return end
+    local packet = table.remove(self.professionSendQueue, 1)
+    -- Requests belong to the open target/tab. Replies must keep sending even
+    -- when this client's inspect window is closed: we are serving another user.
+    if packet.request and (not f:IsShown() or self.currentTab ~= "professions"
+        or self.professionReplyComplete or not self.currentUnit or self.currentUnit ~= packet.unit
+        or not UnitExists(self.currentUnit) or UnitName(self.currentUnit) ~= packet.target) then return end
+    self.professionSendElapsed = 0
+    -- TW_CHAT_MSG_WHISPER is OctoWoW's server inspect RPC, not a general
+    -- peer transport. Vanilla's SendAddonMessage has no whisper destination.
+    -- Use real whispers and hide only our marked protocol in the chat display.
+    local ok = pcall(SendChatMessage, "/" .. packet.message, "WHISPER", nil, packet.target)
+    if not ok and packet.request then
+        professionStatusText:SetText("Profession request could not be sent")
     end
 end
 
+function zInspect:InstallProfessionChatFilter()
+    if self.professionChatFiltered or type(ChatFrame_OnEvent) ~= "function" then return end
+    local original = ChatFrame_OnEvent
+    ChatFrame_OnEvent = function(chatEvent)
+        if (chatEvent == "CHAT_MSG_WHISPER" or chatEvent == "CHAT_MSG_WHISPER_INFORM")
+            and type(arg1) == "string"
+            and string.sub(arg1, 1, string.len(PROFESSION_WHISPER_HEADER)) == PROFESSION_WHISPER_HEADER then return end
+        return original(chatEvent)
+    end
+    self.professionChatFiltered = true
+end
+
 function zInspect:SendProfessions(target)
+    local key = string.lower(target)
+    local last = self.professionLastResponse[key]
+    -- A retry while an earlier response is queued must not duplicate its burst.
+    if last and self.professionSyncClock - last < 3 then return end
+    self.professionLastResponse[key] = self.professionSyncClock
+    if not C_SpellBook or not C_SpellBook.GetSkillLineRank then
+        self:SendProfessionMessage(target, "ZINSProf;unavailable;1")
+        return
+    end
     local professions = self:GetLocalProfessions()
-    self:SendProfessionMessage(target, "ZINSProf;start;1")
+    self:SendProfessionMessage(target, "ZINSProf;start;1;" .. table.getn(professions))
     for _, profession in ipairs(professions) do
         local bits = profession.bits or ""
         local total = math.max(1, math.ceil(string.len(bits) / 150))
@@ -1370,7 +1422,10 @@ end
 function zInspect:RequestProfessions()
     if not self.professionUnitName or not self.currentUnit or not UnitExists(self.currentUnit)
         or UnitName(self.currentUnit) ~= self.professionUnitName or UnitIsUnit("player", self.currentUnit) then return end
-    self:SendProfessionMessage(self.professionUnitName, "ZINSProf;request;1")
+    if not self:SendProfessionMessage(self.professionUnitName, "ZINSProf;request;1") then
+        professionStatusText:SetText("Profession request could not be queued")
+        return
+    end
     self.professionRequestCount = self.professionRequestCount + 1
     self.professionRetryElapsed = 0
     professionStatusText:SetText(string.format("Requesting %s's professions... (%d/%d)",
@@ -1386,6 +1441,8 @@ function zInspect:StartProfessionInspect(unit)
     self.professionReplyStarted = false
     self.professionReplyComplete = false
     self.professionResponseElapsed = 0
+    self.professionExpectedCount = nil
+    self.professionError = nil
     if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return end
     self.professionUnitName = UnitName(unit)
     if UnitIsUnit("player", unit) then
@@ -1405,35 +1462,52 @@ function zInspect:UpdateProfessionsTab()
         self:RenderProfessions()
     elseif self.professionReplyComplete then
         self:RenderProfessions()
-    elseif self.professionRequestCount == 0 then
+    elseif self.professionRequestCount == 0 or (self.professionRequestCount >= PROFESSION_MAX_REQUESTS
+        and self.professionRetryElapsed >= PROFESSION_RETRY_INTERVAL and not self.professionReplyStarted) then
+        self.professionRequestCount = 0
         self:RenderProfessions()
         self:RequestProfessions()
     end
 end
 
 function zInspect:HandleProfessionMessage(prefix, message, sender)
-    if prefix ~= "TW_CHAT_MSG_WHISPER" or type(message) ~= "string" or type(sender) ~= "string" then return end
+    if prefix ~= "ZINSProf" or type(message) ~= "string" or type(sender) ~= "string" or sender == "" then return end
     if message == "ZINSProf;request;1" then
         self:SendProfessions(sender)
         return
     end
-    if not f:IsShown() or not self.professionUnitName or not self.currentUnit
+    if not f:IsShown() or not self.professionUnitName or not self.currentUnit or self.professionRequestCount == 0
         or not UnitExists(self.currentUnit) or UnitName(self.currentUnit) ~= self.professionUnitName
         or string.lower(sender) ~= string.lower(self.professionUnitName) then return end
 
-    if message == "ZINSProf;start;1" then
+    if message == "ZINSProf;unavailable;1" then
+        self.professionReplyComplete = true
+        self.professionReplyStarted = false
+        self.professionError = "The player's client cannot read profession data"
+        professionStatusText:SetText(self.professionError)
+        return
+    end
+    local _, _, expected = string.find(message, "^ZINSProf;start;1;(%d+)$")
+    expected = tonumber(expected)
+    if expected and expected <= table.getn(PROFESSION_SKILLS) then
         self.professionData = {}
         self.professionChunks = {}
         self.professionReplyStarted = true
         self.professionReplyComplete = false
         self.professionResponseElapsed = 0
+        self.professionExpectedCount = expected
+        if self.currentTab == "professions" then self:RenderProfessions() end
         professionStatusText:SetText("Receiving profession data...")
         return
     end
     if message == "ZINSProf;end;1" and self.professionReplyStarted then
-        self.professionReplyComplete = true
+        self.professionReplyComplete = table.getn(self.professionData) == self.professionExpectedCount
+            and not next(self.professionChunks)
         self.professionReplyStarted = false
-        if self.currentTab == "professions" then self:RenderProfessions() end
+        if self.currentTab == "professions" then
+            self:RenderProfessions()
+            if not self.professionReplyComplete then professionStatusText:SetText("Incomplete profession reply; retrying...") end
+        end
         return
     end
 
@@ -1441,7 +1515,8 @@ function zInspect:HandleProfessionMessage(prefix, message, sender)
         "^ZINSProf;skill;(%d+);(%d+);(%d+);(%d+);(%d+);(.*)$")
     skillID, current, maximum, part, total = tonumber(skillID), tonumber(current), tonumber(maximum), tonumber(part), tonumber(total)
     if not skillID or not current or not maximum or not part or not total or part < 1 or part > total or total > 2
-        or current > 1000 or maximum > 1000 or (chunk ~= "-" and string.find(chunk, "[^A-Za-z0-9+/]")) then return end
+        or current > 1000 or maximum > 1000 or not chunk or string.len(chunk) > 150
+        or (chunk ~= "-" and (chunk == "" or string.find(chunk, "[^A-Za-z0-9+/]"))) then return end
     if not ProfessionDefinition(skillID) or not self.professionReplyStarted then return end
     local pending = self.professionChunks[skillID]
     if not pending or pending.total ~= total then
@@ -1455,7 +1530,12 @@ function zInspect:HandleProfessionMessage(prefix, message, sender)
         if pending.chunks[i] == nil then return end
         bits = bits .. pending.chunks[i]
     end
-    table.insert(self.professionData, { id = skillID, current = current, maximum = maximum, bits = bits })
+    local profession = { id = skillID, current = current, maximum = maximum, bits = bits }
+    local replaced = false
+    for i, existing in ipairs(self.professionData) do
+        if existing.id == skillID then self.professionData[i] = profession; replaced = true; break end
+    end
+    if not replaced then table.insert(self.professionData, profession) end
     self.professionChunks[skillID] = nil
     if self.currentTab == "professions" then self:RenderProfessions() end
 end
@@ -1854,23 +1934,30 @@ local function UpdateCachedItem(addon, unitName, id, texture, link, count, quali
 end
 
 -- Update Gear Slots from live unit, cache, or cross-faction visible items
-function zInspect:UpdateSlots(unit, liveUpdateConfirmed)
+function zInspect:UpdateSlots(unit)
     if not unit or not UnitExists(unit) then return 0, false end
     local hasCachedData = false
     local unitName = UnitName(unit)
     local cachedUnit = unitName and self.cache[unitName]
-    local authoritativeLiveUpdate = liveUpdateConfirmed and not self.isTargetEnemy and not self.isWaitingForRange
+    -- Cached items are useful while the unit cannot be inspected. Once live
+    -- inventory is readable, a missing item is an empty slot, not permission
+    -- to resurrect its last known equipment. This also applies on reinspection.
+    local authoritativeLiveUpdate = not self.isWaitingForRange
+        and (not self.isTargetEnemy or type(GetInventoryItemID) == "function")
     local itemsFound = 0
     local totalItemLevel = 0
     local itemsWithLevel = 0
+    local gearChanged = false
+    local hoveredSlotChanged = false
 
     for id, btn in pairs(slotButtons) do
         local texture, link, count, quality, itemLevel = ResolveItemData(unit, id)
 
-        -- If live info is missing, try session cache
-        if not texture and not authoritativeLiveUpdate and cachedUnit and cachedUnit.items
+        -- Reuse an icon for a known matching item that is still loading. An
+        -- absent live item may fall back only while inventory is unavailable.
+        if not texture and cachedUnit and cachedUnit.items
             and cachedUnit.items[id] and (cachedUnit.items[id].texture or cachedUnit.items[id].link)
-            and (not link or cachedUnit.items[id].link == link) then
+            and ((link and cachedUnit.items[id].link == link) or (not link and not authoritativeLiveUpdate)) then
             texture = cachedUnit.items[id].texture
             link = cachedUnit.items[id].link
             count = cachedUnit.items[id].count or 1
@@ -1878,6 +1965,8 @@ function zInspect:UpdateSlots(unit, liveUpdateConfirmed)
             itemLevel = cachedUnit.items[id].itemLevel
             hasCachedData = true
         end
+
+        local previousLink, previousTexture = btn.displayState.link, btn.displayState.texture
 
         if texture or link then
             itemsFound = itemsFound + 1
@@ -1920,6 +2009,27 @@ function zInspect:UpdateSlots(unit, liveUpdateConfirmed)
             if authoritativeLiveUpdate and unitName and cachedUnit and cachedUnit.items and cachedUnit.items[id] then
                 UpdateCachedItem(self, unitName, id, nil, nil, nil, nil, nil)
             end
+        end
+        if btn.displayState.link ~= previousLink or btn.displayState.texture ~= previousTexture then
+            gearChanged = true
+            if btn == self.hoveredGearSlot then hoveredSlotChanged = true end
+        end
+    end
+
+    if gearChanged and self.currentTab == "character" and self.currentUnit == unit
+        and self.currentUnitName == unitName then
+        -- Rebuild the outfit only after actual equipment changes, keeping the
+        -- user's rotation, pan and zoom instead of resetting the model view.
+        local facing = model:GetFacing()
+        local z, x, y = model:GetPosition()
+        model:ClearModel()
+        model:SetUnit(unit)
+        if type(facing) == "number" then model:SetFacing(facing) end
+        if type(z) == "number" and type(x) == "number" and type(y) == "number" then
+            model:SetPosition(z, x, y)
+        end
+        if hoveredSlotChanged and GameTooltip:IsOwned(self.hoveredGearSlot) then
+            self:ShowSlotTooltip(self.hoveredGearSlot)
         end
     end
 
@@ -2151,12 +2261,14 @@ eventFrame:RegisterEvent("INSPECT_HONOR_UPDATE")
 eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
+eventFrame:RegisterEvent("CHAT_MSG_WHISPER")
 eventFrame:RegisterEvent("CHARACTER_POINTS_CHANGED")
 eventFrame:RegisterEvent("SPELLS_CHANGED")
 
 eventFrame:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" or event == "PLAYER_ENTERING_WORLD" then
         zInspectDB = zInspectDB or {}
+        zInspect:InstallProfessionChatFilter()
         
         -- Restore only complete coordinates. An empty pos table previously
         -- removed the frame's anchor and made /zi look completely inert.
@@ -2194,9 +2306,14 @@ eventFrame:SetScript("OnEvent", function()
             zInspect:RenderProfessions()
         end
 
+    elseif event == "CHAT_MSG_WHISPER" then
+        if type(arg1) == "string"
+            and string.sub(arg1, 1, string.len(PROFESSION_WHISPER_HEADER)) == PROFESSION_WHISPER_HEADER then
+            zInspect:HandleProfessionMessage("ZINSProf", string.sub(arg1, 2), arg2)
+        end
+
     elseif event == "CHAT_MSG_ADDON" then
         zInspect:HandleTransmogMessage(arg1, arg2, arg4)
-        zInspect:HandleProfessionMessage(arg1, arg2, arg4)
         if f:IsShown() and zInspect.currentTab == "talents" and zInspect.talentRetryName
             and arg1 == "TW_CHAT_MSG_WHISPER" and arg4
             and string.lower(arg4) == string.lower(zInspect.talentRetryName) then
@@ -2224,11 +2341,11 @@ eventFrame:SetScript("OnEvent", function()
         if f:IsShown() and zInspect.currentUnit and UnitExists(zInspect.currentUnit) then
             if arg1 == zInspect.currentUnit or (arg1 and UnitExists(arg1) and UnitIsUnit(arg1, zInspect.currentUnit)) then
                 zInspect:ScheduleTransmogRefresh()
-            end
-            if zInspect.isTargetPlayer and zInspect.currentTab == "character" then
-                local itemsFound = zInspect:UpdateSlots(zInspect.currentUnit, true)
-                if itemsFound and itemsFound > 0 then
-                    statusBadge:SetText("|cff00ff00Inspected|r")
+                if zInspect.isTargetPlayer and zInspect.currentTab == "character" then
+                    local itemsFound = zInspect:UpdateSlots(zInspect.currentUnit)
+                    if itemsFound and itemsFound > 0 then
+                        statusBadge:SetText("|cff00ff00Inspected|r")
+                    end
                 end
             end
         end
@@ -2241,8 +2358,16 @@ eventFrame:SetScript("OnEvent", function()
     end
 end)
 
--- Polling Watcher: Streams gear the moment an out-of-range player enters range,
--- and periodically refreshes uncached items on enemy targets
+-- This frame is independent of the inspect window; closed windows still answer
+-- other players. One packet per interval, with no bursts after a long frame.
+eventFrame:SetScript("OnUpdate", function()
+    zInspect:UpdateProfessionTransport(arg1 or 0)
+end)
+zInspect:InstallProfessionChatFilter()
+
+-- Poll all player equipment while the Character tab is open. Remote inventory
+-- events are not reliable on every client, so removals must also work without
+-- one. These are local reads; NotifyInspect is needed only on entering range.
 f:SetScript("OnUpdate", function()
     if not f:IsShown() then return end
     zInspect:UpdateTransmogInspect(arg1)
@@ -2264,7 +2389,11 @@ f:SetScript("OnUpdate", function()
                 zInspect:RequestProfessions()
             elseif zInspect.professionRequestCount >= PROFESSION_MAX_REQUESTS
                 and zInspect.professionRetryElapsed >= PROFESSION_RETRY_INTERVAL then
-                professionStatusText:SetText("No reply. The player needs zInspect 1.5+ to share professions.")
+                if table.getn(zInspect.professionData) > 0 then
+                    professionStatusText:SetText("Incomplete reply. Reopen this tab to retry.")
+                else
+                    professionStatusText:SetText("No reply after 3 requests. Both players need 1.5.1+\nand must be able to whisper each other.")
+                end
             end
         end
     end
@@ -2317,19 +2446,24 @@ f:SetScript("OnUpdate", function()
     if zInspect.pollTimer >= 0.25 then
         zInspect.pollTimer = 0
 
-        if zInspect.isWaitingForRange and zInspect.currentUnit and UnitExists(zInspect.currentUnit) then
-            if CheckInteractDistance(zInspect.currentUnit, 1) then
+        if zInspect.currentTab == "character" and zInspect.isTargetPlayer
+            and zInspect.currentUnit and UnitExists(zInspect.currentUnit) then
+            local unit = zInspect.currentUnit
+            local inRange = UnitIsUnit("player", unit) or CheckInteractDistance(unit, 1)
+            if zInspect.isWaitingForRange and inRange then
                 -- Target stepped into range!
                 zInspect.isWaitingForRange = false
                 statusBadge:SetText("|cff33ffccStreaming gear...|r")
-                NotifyInspect(zInspect.currentUnit)
-                if RequestInspectHonorData then RequestInspectHonorData() end
-                zInspect.inspectRequested = true
-                zInspect:UpdateSlots(zInspect.currentUnit)
+                if not UnitIsUnit("player", unit) and (not zInspect.isTargetEnemy or CanInspect(unit)) then
+                    NotifyInspect(unit)
+                    if RequestInspectHonorData then RequestInspectHonorData() end
+                    zInspect.inspectRequested = true
+                end
+            elseif not inRange and not zInspect.isWaitingForRange then
+                zInspect.isWaitingForRange = true
+                statusBadge:SetText("|cffffd200Cached (Out of Range)|r")
             end
-        elseif zInspect.isTargetEnemy and zInspect.currentTab == "character" then
-            -- Refresh uncached items that have now resolved from server/tooltip
-            zInspect:UpdateSlots(zInspect.currentUnit)
+            zInspect:UpdateSlots(unit)
         end
     end
 end)

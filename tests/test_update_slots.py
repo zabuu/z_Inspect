@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from lupa import LuaRuntime
+from lupa.lua51 import LuaRuntime
 
 
 ADDON_FILE = Path(__file__).resolve().parents[1] / "zInspect.lua"
@@ -69,7 +69,11 @@ local function NewWidget(name)
     function widget:Show() self._shown = true end
     function widget:Hide() self._shown = false end
 
-    setmetatable(widget, { __index = function() return function() end end })
+    setmetatable(widget, { __index = function(_, key)
+        if type(key) == "string" and string.find(key, "^[A-Z]") then
+            return function() end
+        end
+    end })
     return widget
 end
 
@@ -180,11 +184,48 @@ def lua_item(item_id, name, texture, quality=3, item_level=60, count=1):
     }
 
 
+INSPECTION_MOCK = r'''
+TEST_UNITS.player = { name="Me", items={} }
+TEST_IN_RANGE, NOTIFY_CALLS, MODEL_REFRESHES = true, 0, 0
+function UnitIsPlayer(unit) return UnitExists(unit) end
+function UnitIsUnit(first, second)
+    return UnitName(first) ~= nil and UnitName(first) == UnitName(second)
+end
+function UnitIsEnemy() return false end
+function UnitLevel() return 60 end
+function UnitRace() return "Human" end
+function UnitClass() return "Warrior", "WARRIOR" end
+function GetGuildInfo() return nil end
+function UnitClassification() return "normal" end
+function CheckInteractDistance() return TEST_IN_RANGE end
+function NotifyInspect() NOTIFY_CALLS = NOTIFY_CALLS + 1 end
+
+function zInspectPlayerModel:ClearModel() end
+function zInspectPlayerModel:SetUnit(unit)
+    MODEL_REFRESHES = MODEL_REFRESHES + 1
+    self.modelUnit, self.facing, self.pos = unit, 0, { 0, 0, 0 }
+end
+function zInspectPlayerModel:GetFacing() return self.facing end
+function zInspectPlayerModel:SetFacing(value) self.facing = value end
+function zInspectPlayerModel:GetPosition()
+    return unpack(type(self.pos) == "table" and self.pos or {0,0,0})
+end
+function zInspectPlayerModel:SetPosition(z,x,y) self.pos = {z,x,y} end
+
+function GameTooltip:SetOwner(owner) self.owner = owner end
+function GameTooltip:IsOwned(owner) return owner ~= nil and self.owner == owner end
+function GameTooltip:SetInventoryItem(unit, slot)
+    return TEST_UNITS[unit] and TEST_UNITS[unit].items[slot] ~= nil
+end
+'''
+
+
 class UpdateSlotsTests(unittest.TestCase):
     def setUp(self):
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.lua.execute(WOW_MOCK)
         self.lua.execute(ADDON_FILE.read_text(encoding="utf-8"))
+        self.lua.execute(INSPECTION_MOCK)
         self.g = self.lua.globals()
         self.addon = self.g.zInspect
         self.addon.currentTab = "character"
@@ -204,8 +245,8 @@ class UpdateSlotsTests(unittest.TestCase):
     def slot(self, name="MainHandSlot"):
         return self.g[f"zInspectSlot_{name}"]
 
-    def update(self, unit="target", live_update_confirmed=False):
-        return self.addon.UpdateSlots(self.addon, unit, live_update_confirmed)
+    def update(self, unit="target"):
+        return self.addon.UpdateSlots(self.addon, unit)
 
     def reset_writes(self):
         self.g.ResetGearWrites()
@@ -244,7 +285,7 @@ class UpdateSlotsTests(unittest.TestCase):
 
         self.reset_writes()
         self.lua.execute("TEST_UNITS.target.items[16] = nil")
-        self.update(live_update_confirmed=True)
+        self.update()
         self.assertEqual(button.icon.texture, "Interface\\PaperDoll\\Empty-MainHandSlot")
         self.assertEqual(button.count._text, "")
         self.assertIsNone(self.lua.eval("rawget(zInspectSlot_MainHandSlot, 'itemLink')"))
@@ -296,6 +337,97 @@ class UpdateSlotsTests(unittest.TestCase):
         self.assertEqual(self.slot().icon.texture, beta["texture"])
         self.assertGreater(self.slot().icon.writes.texture, 0)
         self.assertTrue(self.lua.eval("zInspect.cache.Alpha.items[16] ~= zInspect.cache.Beta.items[16]"))
+
+    def tick(self):
+        self.g.arg1 = 0.25
+        self.g.zInspectFrame._scripts.OnUpdate()
+
+    def test_friendly_removal_without_event_clears_icons_cache_tooltip_and_model(self):
+        item = lua_item(106, "Removed Blade", "Interface\\Icons\\INV_Sword_07")
+        self.install_item("target", 16, item)
+        self.addon.InspectUnit(self.addon, "target")
+        self.lua.execute('''
+            zInspectPlayerModel:SetFacing(1.5)
+            zInspectPlayerModel:SetPosition(2, 3, 4)
+            zInspect:ShowSlotTooltip(zInspectSlot_MainHandSlot)
+            MODEL_REFRESHES = 0
+            TEST_UNITS.target.items[16] = nil
+        ''')
+
+        self.tick()
+        self.assertEqual(self.slot().icon.texture, "Interface\\PaperDoll\\Empty-MainHandSlot")
+        self.assertIsNone(self.slot().displayState.link)
+        self.assertIsNone(self.addon.cache.Alpha["items"][16].link)
+        self.assertEqual(self.g.GameTooltip._text, "Main Hand")
+        self.assertEqual(self.g.MODEL_REFRESHES, 1)
+        self.assertEqual(self.g.zInspectPlayerModel.facing, 1.5)
+        self.assertEqual(list(self.g.zInspectPlayerModel.pos.values()), [2, 3, 4])
+
+        self.reset_writes()
+        self.tick()
+        self.assertEqual(self.g.MODEL_REFRESHES, 1)
+        self.assertEqual(self.g.TotalGearWrites(), 0)
+
+    def test_removal_while_closed_is_not_restored_from_cache_on_reinspection(self):
+        item = lua_item(107, "Old Helmet", "Interface\\Icons\\INV_Helmet_01")
+        self.install_item("target", 1, item)
+        self.addon.InspectUnit(self.addon, "target")
+        self.addon.Hide(self.addon)
+        self.lua.execute("TEST_UNITS.target.items[1] = nil")
+        self.addon.InspectUnit(self.addon, "target")
+        self.assertEqual(self.slot("HeadSlot").icon.texture, "Interface\\PaperDoll\\Empty-HeadSlot")
+        self.assertIsNone(self.addon.cache.Alpha["items"][1].link)
+        self.assertIsNone(self.slot("HeadSlot").displayState.link)
+
+    def test_friendly_swap_is_polled_without_repeated_inspect_requests(self):
+        first = lua_item(108, "First Helmet", "Interface\\Icons\\INV_Helmet_02")
+        second = lua_item(109, "New Helmet", "Interface\\Icons\\INV_Helmet_03")
+        self.install_item("target", 1, first)
+        self.addon.InspectUnit(self.addon, "target")
+        self.install_item("target", 1, second)
+        self.tick()
+        self.assertEqual(self.slot("HeadSlot").icon.texture, second["texture"])
+        self.assertEqual(self.slot("HeadSlot").displayState.link, second["link"])
+        for _ in range(8):
+            self.tick()
+        self.assertEqual(self.g.NOTIFY_CALLS, 1)
+
+    def test_range_cache_is_kept_until_the_unit_becomes_readable_again(self):
+        item = lua_item(110, "Range Helmet", "Interface\\Icons\\INV_Helmet_04")
+        self.install_item("target", 1, item)
+        self.addon.InspectUnit(self.addon, "target")
+        self.lua.execute("TEST_IN_RANGE = false; TEST_UNITS.target.items[1] = nil")
+        self.tick()
+        self.assertTrue(self.addon.isWaitingForRange)
+        self.assertEqual(self.slot("HeadSlot").icon.texture, item["texture"])
+        self.lua.execute("TEST_IN_RANGE = true")
+        self.tick()
+        self.assertFalse(self.addon.isWaitingForRange)
+        self.assertEqual(self.slot("HeadSlot").icon.texture, "Interface\\PaperDoll\\Empty-HeadSlot")
+        self.assertIsNone(self.addon.cache.Alpha["items"][1].link)
+        self.assertEqual(self.g.NOTIFY_CALLS, 2)
+
+    def test_unrelated_inventory_event_does_not_invalidate_inspected_unit(self):
+        item = lua_item(111, "Event Helmet", "Interface\\Icons\\INV_Helmet_05")
+        self.install_item("target", 1, item)
+        self.addon.InspectUnit(self.addon, "target")
+        self.g.ResetQueryCounts()
+        self.lua.execute('event="UNIT_INVENTORY_CHANGED"; arg1="player"; zInspectEventFrame._scripts.OnEvent()')
+        self.assertEqual(self.g.QUERY_COUNTS.texture, 0)
+        self.assertEqual(self.slot("HeadSlot").icon.texture, item["texture"])
+
+        self.lua.execute('TEST_UNITS.target.items[1]=nil; arg1="target"; zInspectEventFrame._scripts.OnEvent()')
+        self.assertEqual(self.slot("HeadSlot").icon.texture, "Interface\\PaperDoll\\Empty-HeadSlot")
+
+    def test_enemy_visible_item_removal_clears_its_cached_slot(self):
+        item = lua_item(112, "Enemy Helmet", "Interface\\Icons\\INV_Helmet_06")
+        self.install_item("target", 1, item)
+        self.addon.isTargetEnemy = True
+        self.update()
+        self.lua.execute("TEST_UNITS.target.items[1] = nil")
+        self.update()
+        self.assertEqual(self.slot("HeadSlot").icon.texture, "Interface\\PaperDoll\\Empty-HeadSlot")
+        self.assertIsNone(self.addon.cache.Alpha["items"][1].link)
 
 
 if __name__ == "__main__":

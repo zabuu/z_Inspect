@@ -20,11 +20,12 @@ Part of the **zSuite** collection of addons.
   - **NPCs & Creatures**: Displays 3D model, level, creature type/family, current/max HP and Mana/Rage/Energy, and target-of-target info.
 - **Integrated Tabs**:
   - **Character Tab**: 19 sleek, border-colored equipment slots (32x32) with item count, quality coloring, and average item level calculation.
+    - Equipment swaps and removals refresh automatically, including when the client misses an inventory event. Live empty slots clear cached gear, and outfit updates preserve the model's rotation and zoom.
     - **Shift-Click Slot**: Links item into chat.
     - **Ctrl-Click Slot**: Previews item in Dressing Room.
   - **Honor Tab**: Fully embedded Vanilla PvP honor summary (Session, Yesterday, This Week, Last Week, Lifetime stats, and Rank Progress Bar) cleanly scaled with non-blocking mouse interaction.
   - **Talents Tab**: Embedded talent tree with custom tree tabs (e.g. Beast Mastery, Marksmanship, Survival), crash-safe Turtle WoW talent data mapping, and proportional scaling fitting all 7 tiers comfortably without clipping or window bleed.
-  - **Professions Tab**: Lists profession ranks and opens ClassicAPI's read-only recipe browser. Your own professions are immediate; other players can share theirs when they also run zInspect 1.5 or newer.
+  - **Professions Tab**: Lists profession ranks and opens ClassicAPI's read-only recipe browser. Your own professions are immediate. Remote inspection requires **both players to run zInspect 1.5.1 or newer**, have ClassicAPI's skill APIs, and be able to whisper each other. Version 1.5.1 fixes the broken remote transport in 1.5.0; it uses marked whispers hidden from normal chat, with paced replies even when the target's inspect window is closed. Reopen the tab to retry after a timeout.
 - **Sleek & Discrete Design**:
   - Matches standard Blizzard `CharacterFrame` and pfUI dimensions (338 x 424 px).
   - Flat, borderless dark aesthetic with subtle branding.
