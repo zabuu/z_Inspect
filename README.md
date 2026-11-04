@@ -49,7 +49,8 @@ Part of the **zSuite** collection of addons.
    World of Warcraft\Interface\AddOns\z_Inspect
    ```
 2. Make sure the folder is named **`z_Inspect`** (not `z_Inspect-main`).
-3. Launch World of Warcraft and enable **zInspect** in the AddOns menu.
+3. Install the optional **[zAPI.dll dependency](https://github.com/zabuu/zAPI#installation)** for additional native equipment information. That guide includes the DLL download, placement beside `WoW.exe`, the `dlls.txt` entry and a full restart. Git/addon-manager installation does not install the shared DLL.
+4. Launch World of Warcraft and enable **zInspect** in the AddOns menu.
 
 ---
 
